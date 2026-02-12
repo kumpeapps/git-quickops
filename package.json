@@ -1,0 +1,130 @@
+{
+  "name": "git-quickops",
+  "displayName": "Git QuickOps",
+  "description": "A comprehensive git operations toolkit with an intuitive menu-driven interface",
+  "version": "0.0.1",
+  "publisher": "kumpeapps",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kumpeapps/helper_scripts"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:gitQuickOpsMenu"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "git-quickops",
+          "title": "Git QuickOps",
+          "icon": "$(git-branch)"
+        }
+      ]
+    },
+    "views": {
+      "git-quickops": [
+        {
+          "id": "gitQuickOpsMenu",
+          "name": "Menu"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "git-quickops.showMenu",
+        "title": "Git QuickOps: Show Main Menu",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.common",
+        "title": "Git QuickOps: Common Commands",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.branches",
+        "title": "Git QuickOps: Branch Management",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.history",
+        "title": "Git QuickOps: Commit History",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.cleanup",
+        "title": "Git QuickOps: Cleanup",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.stash",
+        "title": "Git QuickOps: Stash",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.tags",
+        "title": "Git QuickOps: Tags",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.remotes",
+        "title": "Git QuickOps: Remotes",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.utils",
+        "title": "Git QuickOps: Utilities",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.status",
+        "title": "Git QuickOps: Show Status",
+        "category": "Git QuickOps"
+      },
+      {
+        "command": "git-quickops.addCommitPush",
+        "title": "Git QuickOps: Add → Commit → Push",
+        "category": "Git QuickOps"
+      }
+    ],
+    "configuration": {
+      "title": "Git QuickOps",
+      "properties": {
+        "gitQuickOps.commitPrefix": {
+          "type": "string",
+          "default": "",
+          "description": "Default commit message prefix. Use {{branch}} and {{ticket}} as placeholders.",
+          "markdownDescription": "Default commit message prefix. Use `{{branch}}` and `{{ticket}}` as placeholders."
+        },
+        "gitQuickOps.defaultRemote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Default remote name for push/pull operations"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^6.x",
+    "@typescript-eslint/parser": "^6.x",
+    "eslint": "^8.x",
+    "typescript": "^5.x"
+  }
+}
