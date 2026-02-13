@@ -588,170 +588,181 @@ async function showUtilsMenu() {
     }
 }
 
-// ========== Command Implementations ==========
+// ========== Helper Functions ==========
 
-async function cmdStatus() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    await git.runGitCommand(gitRoot, ['status'], 'Git Status');
-}
-
-async function cmdAdd() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const status = await git.getStatus(gitRoot);
-    
-    if (!status) {
-        vscode.window.showInformationMessage('No changes to add');
-        return;
-    }
-
-    const choice = await vscode.window.showQuickPick([
-        { label: 'Add all changes', value: 'all' },
-        { label: 'Select files to add', value: 'select' },
-    ], { placeHolder: 'How would you like to add changes?' });
-
-    if (!choice) {
-        return;
-    }
-
-    if (choice.value === 'all') {
-        await git.runGitCommand(gitRoot, ['add', '-A'], 'Git Add All');
-        vscode.window.showInformationMessage('All changes added');
-    } else {
-        const files = status.split('\n').map(line => {
-            const match = line.match(/^(.{2})\s+(.+)$/);
-            return match ? { label: match[2], status: match[1] } : null;
-        }).filter(f => f !== null);
-
-        const selected = await vscode.window.showQuickPick(
-            files.map(f => ({ label: f!.label, picked: false })),
-            { canPickMany: true, placeHolder: 'Select files to add' }
-        );
-
-        if (selected && selected.length > 0) {
-            for (const file of selected) {
-                await git.execGit(gitRoot, ['add', file.label]);
-            }
-            vscode.window.showInformationMessage(`Added ${selected.length} file(s)`);
-        }
-    }
-}
-
-async function cmdCommit() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    // Check if there are staged changes
-    const status = await git.execGit(gitRoot, ['status', '--porcelain']);
-    const hasStagedChanges = status.split('\n').some(line => line.match(/^[MADRC]/));
-    
-    if (!hasStagedChanges) {
-        vscode.window.showWarningMessage('No staged changes to commit. Use "Add → Commit → Push" to stage all changes first.');
-        return;
-    }
-    
-    // Check tests before committing
-    let testResult: any;
-    
-    // Show running notification (without buttons so it auto-dismisses after ~5 seconds)
-    vscode.window.showInformationMessage('⏳ Running tests...');
-    
-    testResult = await git.checkTestsBeforeCommit(gitRoot);
-    
-    // Show result message (also auto-dismisses)
-    if (testResult.noTests) {
-        vscode.window.showInformationMessage('✅ No tests found - proceeding with commit');
-    } else if (testResult.passed) {
-        vscode.window.showInformationMessage('✅ Tests passed successfully');
-    }
-    
-    if (!testResult.canProceed) {
-        vscode.window.showErrorMessage(testResult.message || 'Commit blocked by tests');
-        return;
-    }
-    if (testResult.message && testResult.message.includes('Warning')) {
-        const choice = await vscode.window.showWarningMessage(
-            testResult.message,
-            'Commit Anyway', 'Cancel'
-        );
-        if (choice !== 'Commit Anyway') {
-            return;
-        }
-    }
-    
-    const prefix = await git.getProcessedPrefix(gitRoot);
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter commit message',
-        placeHolder: 'Commit message',
-        value: prefix
-    });
-
-    if (!message) {
-        return;
-    }
-
-    await git.runGitCommand(gitRoot, ['commit', '-m', message], 'Git Commit');
-    vscode.window.showInformationMessage('Changes committed');
-}
-
-async function cmdAddCommitPush() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    // Check tests before committing
-    let testResult: any;
-    
-    // Show running notification (without buttons so it auto-dismisses after ~5 seconds)
-    vscode.window.showInformationMessage('⏳ Running tests...');
-    
-    testResult = await git.checkTestsBeforeCommit(gitRoot);
-    
-    // Show result message (also auto-dismisses)
-    if (testResult.noTests) {
-        vscode.window.showInformationMessage('✅ No tests found - proceeding with commit');
-    } else if (testResult.passed) {
-        vscode.window.showInformationMessage('✅ Tests passed successfully');
-    }
-    
-    if (!testResult.canProceed) {
-        vscode.window.showErrorMessage(testResult.message || 'Commit blocked by tests');
-        return;
-    }
-    if (testResult.message && testResult.message.includes('Warning')) {
-        const choice = await vscode.window.showWarningMessage(
-            testResult.message,
-            'Commit Anyway', 'Cancel'
-        );
-        if (choice !== 'Commit Anyway') {
-            return;
-        }
-    }
-    
-    // Add all changes
-    await git.execGit(gitRoot, ['add', '-A']);
-    vscode.window.showInformationMessage('Changes added');
-    
-    // Get commit message
-    const prefix = await git.getProcessedPrefix(gitRoot);
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter commit message',
-        placeHolder: 'Commit message',
-        value: prefix
-    });
-
-    if (!message) {
-        return;
-    }
-
-    // Commit
-    await git.execGit(gitRoot, ['commit', '-m', message]);
-    vscode.window.showInformationMessage('Changes committed');
-    
-    // Push
-    const branch = await git.getCurrentBranch(gitRoot);
-    const pushTarget = await resolvePushTarget(gitRoot, branch);
-    if (!pushTarget) {
-        return;
+function formatError(error: unknown): string {
+    if (error instanceof Error && typeof error.message === 'string' && error.message.length > 0) {
+        return error.message;
     }
 
     try {
+        return String(error);
+    } catch {
+        return 'Unknown error';
+    }
+}
+
+async function runCommand<T>(
+    action: string,
+    fn: () => Promise<T>
+): Promise<T | undefined> {
+    try {
+        return await fn();
+    } catch (error) {
+        vscode.window.showErrorMessage(`Failed to ${action}: ${formatError(error)}`);
+        return undefined;
+    }
+}
+
+async function ensureTestsAllowCommit(gitRoot: string): Promise<boolean> {
+    vscode.window.showInformationMessage('⏳ Running tests...');
+
+    const testResult: any = await git.checkTestsBeforeCommit(gitRoot);
+
+    if (testResult.noTests) {
+        vscode.window.showInformationMessage('✅ No tests found - proceeding with commit');
+    } else if (testResult.passed) {
+        vscode.window.showInformationMessage('✅ Tests passed successfully');
+    }
+
+    if (!testResult.canProceed) {
+        vscode.window.showErrorMessage(testResult.message || 'Commit blocked by tests');
+        return false;
+    }
+
+    if (testResult.message && testResult.message.includes('Warning')) {
+        const choice = await vscode.window.showWarningMessage(
+            testResult.message,
+            'Commit Anyway', 'Cancel'
+        );
+        if (choice !== 'Commit Anyway') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// ========== Command Implementations ==========
+
+async function cmdStatus() {
+    return runCommand('show status', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        await git.runGitCommand(gitRoot, ['status'], 'Git Status');
+    });
+}
+
+async function cmdAdd() {
+    return runCommand('add changes', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const status = await git.getStatus(gitRoot);
+        
+        if (!status) {
+            vscode.window.showInformationMessage('No changes to add');
+            return;
+        }
+
+        const choice = await vscode.window.showQuickPick([
+            { label: 'Add all changes', value: 'all' },
+            { label: 'Select files to add', value: 'select' },
+        ], { placeHolder: 'How would you like to add changes?' });
+
+        if (!choice) {
+            return;
+        }
+
+        if (choice.value === 'all') {
+            await git.runGitCommand(gitRoot, ['add', '-A'], 'Git Add All');
+            vscode.window.showInformationMessage('All changes added');
+        } else {
+            const files = status.split('\n').map(line => {
+                const match = line.match(/^(.{2})\s+(.+)$/);
+                return match ? { label: match[2], status: match[1] } : null;
+            }).filter(f => f !== null);
+
+            const selected = await vscode.window.showQuickPick(
+                files.map(f => ({ label: f!.label, picked: false })),
+                { canPickMany: true, placeHolder: 'Select files to add' }
+            );
+
+            if (selected && selected.length > 0) {
+                for (const file of selected) {
+                    await git.execGit(gitRoot, ['add', file.label]);
+                }
+                vscode.window.showInformationMessage(`Added ${selected.length} file(s)`);
+            }
+        }
+    });
+}
+
+async function cmdCommit() {
+    return runCommand('commit', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        // Check if there are staged changes
+        const status = await git.execGit(gitRoot, ['status', '--porcelain']);
+        const hasStagedChanges = status.split('\n').some(line => line.match(/^[MADRC]/));
+        
+        if (!hasStagedChanges) {
+            vscode.window.showWarningMessage('No staged changes to commit. Use "Add → Commit → Push" to stage all changes first.');
+            return;
+        }
+        
+        if (!(await ensureTestsAllowCommit(gitRoot))) {
+            return;
+        }
+        
+        const prefix = await git.getProcessedPrefix(gitRoot);
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter commit message',
+            placeHolder: 'Commit message',
+            value: prefix
+        });
+
+        if (!message) {
+            return;
+        }
+
+        await git.runGitCommand(gitRoot, ['commit', '-m', message], 'Git Commit');
+        vscode.window.showInformationMessage('Changes committed');
+    });
+}
+
+async function cmdAddCommitPush() {
+    return runCommand('add/commit/push', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        if (!(await ensureTestsAllowCommit(gitRoot))) {
+            return;
+        }
+        
+        // Add all changes
+        await git.execGit(gitRoot, ['add', '-A']);
+        vscode.window.showInformationMessage('Changes added');
+        
+        // Get commit message
+        const prefix = await git.getProcessedPrefix(gitRoot);
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter commit message',
+            placeHolder: 'Commit message',
+            value: prefix
+        });
+
+        if (!message) {
+            return;
+        }
+
+        // Commit
+        await git.execGit(gitRoot, ['commit', '-m', message]);
+        vscode.window.showInformationMessage('Changes committed');
+        
+        // Push
+        const branch = await git.getCurrentBranch(gitRoot);
+        const pushTarget = await resolvePushTarget(gitRoot, branch);
+        if (!pushTarget) {
+            return;
+        }
+
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: `Pushing to ${pushTarget.display}...`,
@@ -761,9 +772,7 @@ async function cmdAddCommitPush() {
         });
 
         vscode.window.showInformationMessage(`Changes pushed to ${pushTarget.display}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Push failed: ${error}`);
-    }
+    });
 }
 
 async function resolvePushTarget(gitRoot: string, branch: string): Promise<{ args: string[]; display: string } | null> {
@@ -928,14 +937,14 @@ async function promptAddRemote(gitRoot: string): Promise<string | null> {
 }
 
 async function cmdPush() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branch = await git.getCurrentBranch(gitRoot);
-    const pushTarget = await resolvePushTarget(gitRoot, branch);
-    if (!pushTarget) {
-        return;
-    }
+    return runCommand('push', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branch = await git.getCurrentBranch(gitRoot);
+        const pushTarget = await resolvePushTarget(gitRoot, branch);
+        if (!pushTarget) {
+            return;
+        }
 
-    try {
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: `Pushing to ${pushTarget.display}...`,
@@ -945,117 +954,129 @@ async function cmdPush() {
         });
 
         vscode.window.showInformationMessage(`Pushed to ${pushTarget.display}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Push failed: ${error}`);
-    }
+    });
 }
 
 async function cmdPull() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Pulling changes...',
-        cancellable: false
-    }, async () => {
-        await git.runGitCommand(gitRoot, ['pull'], 'Git Pull');
+    return runCommand('pull', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Pulling changes...',
+            cancellable: false
+        }, async () => {
+            await git.runGitCommand(gitRoot, ['pull'], 'Git Pull');
+        });
+        
+        vscode.window.showInformationMessage('Changes pulled');
     });
-    
-    vscode.window.showInformationMessage('Changes pulled');
 }
 
 async function cmdFetch() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Fetching from remote...',
-        cancellable: false
-    }, async () => {
-        await git.runGitCommand(gitRoot, ['fetch', '--all'], 'Git Fetch');
+    return runCommand('fetch', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Fetching from remote...',
+            cancellable: false
+        }, async () => {
+            await git.runGitCommand(gitRoot, ['fetch', '--all'], 'Git Fetch');
+        });
+        
+        vscode.window.showInformationMessage('Fetched from remote');
     });
-    
-    vscode.window.showInformationMessage('Fetched from remote');
 }
 
 async function cmdLog() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    await git.runGitCommand(gitRoot, ['log', '--oneline', '--graph', '--decorate', '-20'], 'Git Log');
+    return runCommand('show log', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        await git.runGitCommand(gitRoot, ['log', '--oneline', '--graph', '--decorate', '-20'], 'Git Log');
+    });
 }
 
 async function cmdDiff() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const choice = await vscode.window.showQuickPick([
-        { label: 'Diff working directory', value: 'working' },
-        { label: 'Diff staged changes', value: 'staged' },
-    ], { placeHolder: 'Select diff type' });
+    return runCommand('show diff', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const choice = await vscode.window.showQuickPick([
+            { label: 'Diff working directory', value: 'working' },
+            { label: 'Diff staged changes', value: 'staged' },
+        ], { placeHolder: 'Select diff type' });
 
-    if (!choice) {
-        return;
-    }
+        if (!choice) {
+            return;
+        }
 
-    const args = choice.value === 'staged' ? ['diff', '--staged'] : ['diff'];
-    await git.runGitCommand(gitRoot, args, 'Git Diff');
+        const args = choice.value === 'staged' ? ['diff', '--staged'] : ['diff'];
+        await git.runGitCommand(gitRoot, args, 'Git Diff');
+    });
 }
 
 async function cmdBranchCreate() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const branchName = await vscode.window.showInputBox({
-        prompt: 'Enter new branch name',
-        placeHolder: 'feature/my-branch'
+    return runCommand('create branch', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const branchName = await vscode.window.showInputBox({
+            prompt: 'Enter new branch name',
+            placeHolder: 'feature/my-branch'
+        });
+
+        if (!branchName) {
+            return;
+        }
+
+        await git.execGit(gitRoot, ['checkout', '-b', branchName]);
+        vscode.window.showInformationMessage(`Created and switched to branch: ${branchName}`);
     });
-
-    if (!branchName) {
-        return;
-    }
-
-    await git.execGit(gitRoot, ['checkout', '-b', branchName]);
-    vscode.window.showInformationMessage(`Created and switched to branch: ${branchName}`);
 }
 
 async function cmdBranchCreateFrom() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branches = await git.getBranches(gitRoot, true);
-    
-    const sourceBranch = await vscode.window.showQuickPick(branches, {
-        placeHolder: 'Select source branch'
+    return runCommand('create branch from source', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branches = await git.getBranches(gitRoot, true);
+        
+        const sourceBranch = await vscode.window.showQuickPick(branches, {
+            placeHolder: 'Select source branch'
+        });
+
+        if (!sourceBranch) {
+            return;
+        }
+
+        const branchName = await vscode.window.showInputBox({
+            prompt: 'Enter new branch name',
+            placeHolder: 'feature/my-branch'
+        });
+
+        if (!branchName) {
+            return;
+        }
+
+        await git.execGit(gitRoot, ['checkout', '-b', branchName, sourceBranch]);
+        vscode.window.showInformationMessage(`Created branch ${branchName} from ${sourceBranch}`);
     });
-
-    if (!sourceBranch) {
-        return;
-    }
-
-    const branchName = await vscode.window.showInputBox({
-        prompt: 'Enter new branch name',
-        placeHolder: 'feature/my-branch'
-    });
-
-    if (!branchName) {
-        return;
-    }
-
-    await git.execGit(gitRoot, ['checkout', '-b', branchName, sourceBranch]);
-    vscode.window.showInformationMessage(`Created branch ${branchName} from ${sourceBranch}`);
 }
 
 async function cmdBranchSwitch() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branches = await git.getBranches(gitRoot);
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    const branch = await vscode.window.showQuickPick(
-        branches.filter(b => b !== currentBranch),
-        { placeHolder: 'Select branch to switch to' }
-    );
+    return runCommand('switch branch', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branches = await git.getBranches(gitRoot);
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        const branch = await vscode.window.showQuickPick(
+            branches.filter(b => b !== currentBranch),
+            { placeHolder: 'Select branch to switch to' }
+        );
 
-    if (!branch) {
-        return;
-    }
+        if (!branch) {
+            return;
+        }
 
-    await git.execGit(gitRoot, ['checkout', branch]);
-    vscode.window.showInformationMessage(`Switched to branch: ${branch}`);
+        await git.execGit(gitRoot, ['checkout', branch]);
+        vscode.window.showInformationMessage(`Switched to branch: ${branch}`);
+    });
 }
 
 async function cmdBranchCheckoutFromRemote() {
@@ -1119,583 +1140,578 @@ async function cmdBranchCheckoutFromRemote() {
 }
 
 async function cmdBranchRename() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    const newName = await vscode.window.showInputBox({
-        prompt: `Rename current branch (${currentBranch})`,
-        placeHolder: 'new-branch-name',
-        value: currentBranch
+    return runCommand('rename branch', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        const newName = await vscode.window.showInputBox({
+            prompt: `Rename current branch (${currentBranch})`,
+            placeHolder: 'new-branch-name',
+            value: currentBranch
+        });
+
+        if (!newName || newName === currentBranch) {
+            return;
+        }
+
+        await git.execGit(gitRoot, ['branch', '-m', newName]);
+        vscode.window.showInformationMessage(`Branch renamed to: ${newName}`);
     });
-
-    if (!newName || newName === currentBranch) {
-        return;
-    }
-
-    await git.execGit(gitRoot, ['branch', '-m', newName]);
-    vscode.window.showInformationMessage(`Branch renamed to: ${newName}`);
 }
 
 async function cmdBranchDelete() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branches = await git.getBranches(gitRoot);
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    const selected = await vscode.window.showQuickPick(
-        branches.filter(b => b !== currentBranch).map(b => ({ label: b, picked: false })),
-        { canPickMany: true, placeHolder: 'Select branches to delete' }
-    );
+    return runCommand('delete branches', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branches = await git.getBranches(gitRoot);
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        const selected = await vscode.window.showQuickPick(
+            branches.filter(b => b !== currentBranch).map(b => ({ label: b, picked: false })),
+            { canPickMany: true, placeHolder: 'Select branches to delete' }
+        );
 
-    if (!selected || selected.length === 0) {
-        return;
-    }
-
-    const confirm = await vscode.window.showWarningMessage(
-        `Delete ${selected.length} branch(es)?`,
-        { modal: true },
-        'Delete'
-    );
-
-    if (confirm !== 'Delete') {
-        return;
-    }
-
-    for (const branch of selected) {
-        try {
-            await git.execGit(gitRoot, ['branch', '-D', branch.label]);
-        } catch (error) {
-            vscode.window.showErrorMessage(`Failed to delete ${branch.label}: ${error}`);
+        if (!selected || selected.length === 0) {
+            return;
         }
-    }
-    
-    vscode.window.showInformationMessage(`Deleted ${selected.length} branch(es)`);
+
+        const confirm = await vscode.window.showWarningMessage(
+            `Delete ${selected.length} branch(es)?`,
+            { modal: true },
+            'Delete'
+        );
+
+        if (confirm !== 'Delete') {
+            return;
+        }
+
+        for (const branch of selected) {
+            try {
+                await git.execGit(gitRoot, ['branch', '-D', branch.label]);
+            } catch (error) {
+                vscode.window.showErrorMessage(`Failed to delete ${branch.label}: ${error}`);
+            }
+        }
+        
+        vscode.window.showInformationMessage(`Deleted ${selected.length} branch(es)`);
+    });
 }
 
 async function cmdMerge() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branches = await git.getBranches(gitRoot);
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    const branch = await vscode.window.showQuickPick(
-        branches.filter(b => b !== currentBranch),
-        { placeHolder: `Merge branch into ${currentBranch}` }
-    );
+    return runCommand('merge', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branches = await git.getBranches(gitRoot);
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        const branch = await vscode.window.showQuickPick(
+            branches.filter(b => b !== currentBranch),
+            { placeHolder: `Merge branch into ${currentBranch}` }
+        );
 
-    if (!branch) {
-        return;
-    }
+        if (!branch) {
+            return;
+        }
 
-    try {
         await git.runGitCommand(gitRoot, ['merge', branch], `Merge ${branch}`);
         vscode.window.showInformationMessage(`Merged ${branch} into ${currentBranch}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Merge conflict or error: ${error}`);
-    }
+    });
 }
 
 async function cmdHistoryRewriteToSingle() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    const defaultBranch = await git.getDefaultBranch(gitRoot);
-    
-    // Get list of commits
-    const commits = await git.getCommits(gitRoot, 50);
-    
-    if (commits.length === 0) {
-        vscode.window.showInformationMessage('No commits found');
-        return;
-    }
-    
-    // Show commit picker
-    const selectedCommit = await vscode.window.showQuickPick(
-        commits.map(c => ({
-            label: c.display,
-            description: '',
-            commit: c
-        })),
-        {
-            placeHolder: 'Select the commit to rewrite FROM (all commits from here forward will be squashed)'
-        }
-    );
-    
-    if (!selectedCommit) {
-        return;
-    }
-    
-    const confirm = await vscode.window.showWarningMessage(
-        `Rewrite ${currentBranch} from commit ${selectedCommit.commit.hash}? This will squash all commits from this point forward into a single commit.`,
-        { modal: true },
-        'Rewrite'
-    );
-
-    if (confirm !== 'Rewrite') {
-        return;
-    }
-
-    // Check tests before committing
-    let testResult: any;
-    
-    // Show running notification (without buttons so it auto-dismisses after ~5 seconds)
-    vscode.window.showInformationMessage('⏳ Running tests...');
-    
-    testResult = await git.checkTestsBeforeCommit(gitRoot);
-    
-    // Show result message (also auto-dismisses)
-    if (testResult.noTests) {
-        vscode.window.showInformationMessage('✅ No tests found - proceeding with commit');
-    } else if (testResult.passed) {
-        vscode.window.showInformationMessage('✅ Tests passed successfully');
-    }
-    
-    if (!testResult.canProceed) {
-        vscode.window.showErrorMessage(testResult.message || 'Commit blocked by tests');
-        return;
-    }
-    if (testResult.message && testResult.message.includes('Warning')) {
-        const choice = await vscode.window.showWarningMessage(
-            testResult.message,
-            'Commit Anyway', 'Cancel'
-        );
-        if (choice !== 'Commit Anyway') {
+    return runCommand('rewrite history', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        const defaultBranch = await git.getDefaultBranch(gitRoot);
+        
+        // Get list of commits
+        const commits = await git.getCommits(gitRoot, 50);
+        
+        if (commits.length === 0) {
+            vscode.window.showInformationMessage('No commits found');
             return;
         }
-    }
+        
+        // Show commit picker
+        const selectedCommit = await vscode.window.showQuickPick(
+            commits.map(c => ({
+                label: c.display,
+                description: '',
+                commit: c
+            })),
+            {
+                placeHolder: 'Select the commit to rewrite FROM (all commits from here forward will be squashed)'
+            }
+        );
+        
+        if (!selectedCommit) {
+            return;
+        }
+        
+        const confirm = await vscode.window.showWarningMessage(
+            `Rewrite ${currentBranch} from commit ${selectedCommit.commit.hash}? This will squash all commits from this point forward into a single commit.`,
+            { modal: true },
+            'Rewrite'
+        );
 
-    const prefix = await git.getProcessedPrefix(gitRoot);
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter commit message for the single commit',
-        placeHolder: 'Single commit message',
-        value: prefix
-    });
+        if (confirm !== 'Rewrite') {
+            return;
+        }
 
-    if (!message) {
-        return;
-    }
+        if (!(await ensureTestsAllowCommit(gitRoot))) {
+            return;
+        }
 
-    try {
+        const prefix = await git.getProcessedPrefix(gitRoot);
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter commit message for the single commit',
+            placeHolder: 'Single commit message',
+            value: prefix
+        });
+
+        if (!message) {
+            return;
+        }
+
         // Reset to the commit before the selected one
         await git.execGit(gitRoot, ['reset', '--soft', `${selectedCommit.commit.hash}~1`]);
         await git.execGit(gitRoot, ['commit', '-m', message]);
         vscode.window.showInformationMessage(`Branch rewritten to single commit from ${selectedCommit.commit.hash}`);
         // Refresh tree views immediately to show updated commit history
         await vscode.commands.executeCommand('git-quickops.refresh');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to rewrite: ${error}`);
-    }
+    });
 }
 
 async function cmdHistoryRebaseOnto() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const branches = await git.getBranches(gitRoot);
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    const targetBranch = await vscode.window.showQuickPick(
-        branches.filter(b => b !== currentBranch),
-        { placeHolder: `Rebase ${currentBranch} onto which branch?` }
-    );
+    return runCommand('rebase', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const branches = await git.getBranches(gitRoot);
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        const targetBranch = await vscode.window.showQuickPick(
+            branches.filter(b => b !== currentBranch),
+            { placeHolder: `Rebase ${currentBranch} onto which branch?` }
+        );
 
-    if (!targetBranch) {
-        return;
-    }
+        if (!targetBranch) {
+            return;
+        }
 
-    try {
         await git.runGitCommand(gitRoot, ['rebase', targetBranch], `Rebase onto ${targetBranch}`);
         vscode.window.showInformationMessage(`Rebased onto ${targetBranch}`);
         // Refresh tree views immediately to show updated commit history
         await vscode.commands.executeCommand('git-quickops.refresh');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Rebase failed: ${error}`);
-    }
+    });
 }
 
 async function cmdHistorySquashN() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const n = await vscode.window.showInputBox({
-        prompt: 'How many commits to squash?',
-        placeHolder: '2',
-        validateInput: (value) => {
-            const num = parseInt(value);
-            if (isNaN(num) || num < 2) {
-                return 'Please enter a number >= 2';
+    return runCommand('start squash', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const n = await vscode.window.showInputBox({
+            prompt: 'How many commits to squash?',
+            placeHolder: '2',
+            validateInput: (value) => {
+                const num = parseInt(value);
+                if (isNaN(num) || num < 2) {
+                    return 'Please enter a number >= 2';
+                }
+                return null;
             }
-            return null;
+        });
+
+        if (!n) {
+            return;
         }
-    });
 
-    if (!n) {
-        return;
-    }
-
-    try {
         await git.runGitCommand(gitRoot, ['rebase', '-i', `HEAD~${n}`], `Squash ${n} commits`);
         vscode.window.showInformationMessage('Interactive rebase started. Complete in terminal.');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to start rebase: ${error}`);
-    }
+    });
 }
 
 async function cmdHistoryUndoLast() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const confirm = await vscode.window.showWarningMessage(
-        'Undo last commit but keep changes?',
-        { modal: true },
-        'Undo'
-    );
+    return runCommand('undo commit', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const confirm = await vscode.window.showWarningMessage(
+            'Undo last commit but keep changes?',
+            { modal: true },
+            'Undo'
+        );
 
-    if (confirm !== 'Undo') {
-        return;
-    }
+        if (confirm !== 'Undo') {
+            return;
+        }
 
-    await git.execGit(gitRoot, ['reset', '--soft', 'HEAD~1']);
-    vscode.window.showInformationMessage('Last commit undone, changes kept');
+        await git.execGit(gitRoot, ['reset', '--soft', 'HEAD~1']);
+        vscode.window.showInformationMessage('Last commit undone, changes kept');
+    });
 }
 
 async function cmdHistoryAmendMessage() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    // Get current commit message
-    const currentMessage = await git.execGit(gitRoot, ['log', '--format=%B', '-n', '1', 'HEAD']);
-    
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter new commit message',
-        placeHolder: 'Updated commit message',
-        value: currentMessage.trim()
+    return runCommand('amend commit message', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        // Get current commit message
+        const currentMessage = await git.execGit(gitRoot, ['log', '--format=%B', '-n', '1', 'HEAD']);
+        
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter new commit message',
+            placeHolder: 'Updated commit message',
+            value: currentMessage.trim()
+        });
+
+        if (!message) {
+            return;
+        }
+
+        await git.execGit(gitRoot, ['commit', '--amend', '-m', message]);
+        vscode.window.showInformationMessage('Commit message amended');
     });
-
-    if (!message) {
-        return;
-    }
-
-    await git.execGit(gitRoot, ['commit', '--amend', '-m', message]);
-    vscode.window.showInformationMessage('Commit message amended');
 }
 
 async function cmdCleanupPruneFetch() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Fetching and pruning...',
-        cancellable: false
-    }, async () => {
-        await git.execGit(gitRoot, ['fetch', '--all']);
-        await git.execGit(gitRoot, ['fetch', '-p']);
+    return runCommand('fetch and prune', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Fetching and pruning...',
+            cancellable: false
+        }, async () => {
+            await git.execGit(gitRoot, ['fetch', '--all']);
+            await git.execGit(gitRoot, ['fetch', '-p']);
+        });
+        
+        vscode.window.showInformationMessage('Fetched and pruned');
     });
-    
-    vscode.window.showInformationMessage('Fetched and pruned');
 }
 
 async function cmdCleanupDeleteOrphans() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const defaultBranch = await git.getDefaultBranch(gitRoot);
-    
-    // Switch to default branch
-    await git.execGit(gitRoot, ['checkout', defaultBranch]);
-    
-    // Fetch and prune
-    await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
-    
-    // Get remote branches
-    const remoteBranches = await git.getBranches(gitRoot, true);
-    const remoteShortNames = remoteBranches
-        .filter(b => b.startsWith('remotes/origin/'))
-        .map(b => b.replace('remotes/origin/', ''));
-    
-    // Get local branches
-    const localBranches = await git.getBranches(gitRoot);
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    
-    // Find orphans
-    const orphans = localBranches.filter(b => 
-        b !== currentBranch && !remoteShortNames.includes(b)
-    );
-    
-    if (orphans.length === 0) {
-        vscode.window.showInformationMessage('No orphan branches found');
-        return;
-    }
-    
-    const selected = await vscode.window.showQuickPick(
-        orphans.map(b => ({ label: b, picked: false })),
-        { canPickMany: true, placeHolder: 'Select orphan branches to delete' }
-    );
+    return runCommand('delete orphan branches', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const defaultBranch = await git.getDefaultBranch(gitRoot);
+        
+        // Switch to default branch
+        await git.execGit(gitRoot, ['checkout', defaultBranch]);
+        
+        // Fetch and prune
+        await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
+        
+        // Get remote branches
+        const remoteBranches = await git.getBranches(gitRoot, true);
+        const remoteShortNames = remoteBranches
+            .filter(b => b.startsWith('remotes/origin/'))
+            .map(b => b.replace('remotes/origin/', ''));
+        
+        // Get local branches
+        const localBranches = await git.getBranches(gitRoot);
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        
+        // Find orphans
+        const orphans = localBranches.filter(b => 
+            b !== currentBranch && !remoteShortNames.includes(b)
+        );
+        
+        if (orphans.length === 0) {
+            vscode.window.showInformationMessage('No orphan branches found');
+            return;
+        }
+        
+        const selected = await vscode.window.showQuickPick(
+            orphans.map(b => ({ label: b, picked: false })),
+            { canPickMany: true, placeHolder: 'Select orphan branches to delete' }
+        );
 
-    if (!selected || selected.length === 0) {
-        return;
-    }
+        if (!selected || selected.length === 0) {
+            return;
+        }
 
-    const confirm = await vscode.window.showWarningMessage(
-        `Delete ${selected.length} orphan branch(es)?`,
-        { modal: true },
-        'Delete'
-    );
+        const confirm = await vscode.window.showWarningMessage(
+            `Delete ${selected.length} orphan branch(es)?`,
+            { modal: true },
+            'Delete'
+        );
 
-    if (confirm !== 'Delete') {
-        return;
-    }
+        if (confirm !== 'Delete') {
+            return;
+        }
 
-    for (const branch of selected) {
-        await git.execGit(gitRoot, ['branch', '-D', branch.label]);
-    }
-    
-    vscode.window.showInformationMessage(`Deleted ${selected.length} orphan branch(es)`);
+        for (const branch of selected) {
+            await git.execGit(gitRoot, ['branch', '-D', branch.label]);
+        }
+        
+        vscode.window.showInformationMessage(`Deleted ${selected.length} orphan branch(es)`);
+    });
 }
 
 async function cmdCleanupDeleteMerged() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const defaultBranch = await git.getDefaultBranch(gitRoot);
-    
-    // Fetch to ensure we have latest
-    await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
-    
-    // Get merged branches
-    const output = await git.execGit(gitRoot, ['branch', '--merged', defaultBranch]);
-    const mergedBranches = output.split('\n')
-        .map(b => b.replace(/^[\s*]+/, '').trim())
-        .filter(b => b && b !== defaultBranch);
-    
-    const currentBranch = await git.getCurrentBranch(gitRoot);
-    const toDelete = mergedBranches.filter(b => b !== currentBranch);
-    
-    if (toDelete.length === 0) {
-        vscode.window.showInformationMessage(`No branches merged into ${defaultBranch}`);
-        return;
-    }
-    
-    const selected = await vscode.window.showQuickPick(
-        toDelete.map(b => ({ label: b, picked: false })),
-        { canPickMany: true, placeHolder: `Select branches merged into ${defaultBranch} to delete` }
-    );
+    return runCommand('delete merged branches', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const defaultBranch = await git.getDefaultBranch(gitRoot);
+        
+        // Fetch to ensure we have latest
+        await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
+        
+        // Get merged branches
+        const output = await git.execGit(gitRoot, ['branch', '--merged', defaultBranch]);
+        const mergedBranches = output.split('\n')
+            .map(b => b.replace(/^[\s*]+/, '').trim())
+            .filter(b => b && b !== defaultBranch);
+        
+        const currentBranch = await git.getCurrentBranch(gitRoot);
+        const toDelete = mergedBranches.filter(b => b !== currentBranch);
+        
+        if (toDelete.length === 0) {
+            vscode.window.showInformationMessage(`No branches merged into ${defaultBranch}`);
+            return;
+        }
+        
+        const selected = await vscode.window.showQuickPick(
+            toDelete.map(b => ({ label: b, picked: false })),
+            { canPickMany: true, placeHolder: `Select branches merged into ${defaultBranch} to delete` }
+        );
 
-    if (!selected || selected.length === 0) {
-        return;
-    }
+        if (!selected || selected.length === 0) {
+            return;
+        }
 
-    const confirm = await vscode.window.showWarningMessage(
-        `Delete ${selected.length} merged branch(es)?`,
-        { modal: true },
-        'Delete'
-    );
+        const confirm = await vscode.window.showWarningMessage(
+            `Delete ${selected.length} merged branch(es)?`,
+            { modal: true },
+            'Delete'
+        );
 
-    if (confirm !== 'Delete') {
-        return;
-    }
+        if (confirm !== 'Delete') {
+            return;
+        }
 
-    for (const branch of selected) {
-        await git.execGit(gitRoot, ['branch', '-d', branch.label]);
-    }
-    
-    vscode.window.showInformationMessage(`Deleted ${selected.length} merged branch(es)`);
+        for (const branch of selected) {
+            await git.execGit(gitRoot, ['branch', '-d', branch.label]);
+        }
+        
+        vscode.window.showInformationMessage(`Deleted ${selected.length} merged branch(es)`);
+    });
 }
 
 async function cmdStashSave() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter stash message (optional)',
-        placeHolder: 'Stash message'
-    });
+    return runCommand('stash changes', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter stash message (optional)',
+            placeHolder: 'Stash message'
+        });
 
-    const args = message ? ['stash', 'save', message] : ['stash', 'save'];
-    await git.execGit(gitRoot, args);
-    vscode.window.showInformationMessage('Changes stashed');
+        const args = message ? ['stash', 'save', message] : ['stash', 'save'];
+        await git.execGit(gitRoot, args);
+        vscode.window.showInformationMessage('Changes stashed');
+    });
 }
 
 async function cmdStashList() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    await git.runGitCommand(gitRoot, ['stash', 'list'], 'Stash List');
+    return runCommand('list stashes', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        await git.runGitCommand(gitRoot, ['stash', 'list'], 'Stash List');
+    });
 }
 
 async function cmdStashPop() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const stashes = await git.getStashes(gitRoot);
-    
-    if (stashes.length === 0) {
-        vscode.window.showInformationMessage('No stashes found');
-        return;
-    }
-    
-    const selected = await vscode.window.showQuickPick(stashes, {
-        placeHolder: 'Select stash to pop'
+    return runCommand('pop stash', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const stashes = await git.getStashes(gitRoot);
+        
+        if (stashes.length === 0) {
+            vscode.window.showInformationMessage('No stashes found');
+            return;
+        }
+        
+        const selected = await vscode.window.showQuickPick(stashes, {
+            placeHolder: 'Select stash to pop'
+        });
+
+        if (!selected) {
+            return;
+        }
+
+        const stashIndex = stashes.indexOf(selected);
+        await git.execGit(gitRoot, ['stash', 'pop', `stash@{${stashIndex}}`]);
+        vscode.window.showInformationMessage('Stash popped');
     });
-
-    if (!selected) {
-        return;
-    }
-
-    const stashIndex = stashes.indexOf(selected);
-    await git.execGit(gitRoot, ['stash', 'pop', `stash@{${stashIndex}}`]);
-    vscode.window.showInformationMessage('Stash popped');
 }
 
 async function cmdTagCreate() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const tagName = await vscode.window.showInputBox({
-        prompt: 'Enter tag name',
-        placeHolder: 'v1.0.0'
-    });
+    return runCommand('create tag', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const tagName = await vscode.window.showInputBox({
+            prompt: 'Enter tag name',
+            placeHolder: 'v1.0.0'
+        });
 
-    if (!tagName) {
-        return;
-    }
+        if (!tagName) {
+            return;
+        }
 
-    const message = await vscode.window.showInputBox({
-        prompt: 'Enter tag message (optional)',
-        placeHolder: 'Tag message'
-    });
+        const message = await vscode.window.showInputBox({
+            prompt: 'Enter tag message (optional)',
+            placeHolder: 'Tag message'
+        });
 
-    const args = message ? ['tag', '-a', tagName, '-m', message] : ['tag', tagName];
-    await git.execGit(gitRoot, args);
-    vscode.window.showInformationMessage(`Tag created: ${tagName}`);
-    
-    const pushTag = await vscode.window.showQuickPick(['Yes', 'No'], {
-        placeHolder: 'Push tag to remote?'
+        const args = message ? ['tag', '-a', tagName, '-m', message] : ['tag', tagName];
+        await git.execGit(gitRoot, args);
+        vscode.window.showInformationMessage(`Tag created: ${tagName}`);
+        
+        const pushTag = await vscode.window.showQuickPick(['Yes', 'No'], {
+            placeHolder: 'Push tag to remote?'
+        });
+        
+        if (pushTag === 'Yes') {
+            const config = vscode.workspace.getConfiguration('gitQuickOps');
+            const defaultRemote = config.get<string>('defaultRemote', 'origin');
+            await git.execGit(gitRoot, ['push', defaultRemote, tagName]);
+            vscode.window.showInformationMessage(`Tag pushed to ${defaultRemote}`);
+        }
     });
-    
-    if (pushTag === 'Yes') {
-        const config = vscode.workspace.getConfiguration('gitQuickOps');
-        const defaultRemote = config.get<string>('defaultRemote', 'origin');
-        await git.execGit(gitRoot, ['push', defaultRemote, tagName]);
-        vscode.window.showInformationMessage(`Tag pushed to ${defaultRemote}`);
-    }
 }
 
 async function cmdRemotesSetUpstream() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const remotes = await git.getRemotes(gitRoot);
-    
-    let remote = 'origin';
-    if (remotes.length > 1) {
-        const selected = await vscode.window.showQuickPick(remotes, {
-            placeHolder: 'Select remote'
-        });
-        if (selected) {
-            remote = selected;
+    return runCommand('set upstream', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const remotes = await git.getRemotes(gitRoot);
+        
+        let remote = 'origin';
+        if (remotes.length > 1) {
+            const selected = await vscode.window.showQuickPick(remotes, {
+                placeHolder: 'Select remote'
+            });
+            if (selected) {
+                remote = selected;
+            }
         }
-    }
-    
-    const branch = await git.getCurrentBranch(gitRoot);
-    
-    const confirm = await vscode.window.showQuickPick(['Yes', 'No'], {
-        placeHolder: `Push and set upstream to ${remote}/${branch}?`
+        
+        const branch = await git.getCurrentBranch(gitRoot);
+        
+        const confirm = await vscode.window.showQuickPick(['Yes', 'No'], {
+            placeHolder: `Push and set upstream to ${remote}/${branch}?`
+        });
+
+        if (confirm !== 'Yes') {
+            return;
+        }
+
+        await git.runGitCommand(gitRoot, ['push', '-u', remote, branch], 'Push with upstream');
+        vscode.window.showInformationMessage(`Upstream set to ${remote}/${branch}`);
     });
-
-    if (confirm !== 'Yes') {
-        return;
-    }
-
-    await git.runGitCommand(gitRoot, ['push', '-u', remote, branch], 'Push with upstream');
-    vscode.window.showInformationMessage(`Upstream set to ${remote}/${branch}`);
 }
 
 async function cmdUtilsRestoreFile() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const filePath = await vscode.window.showInputBox({
-        prompt: 'Enter file path to restore from HEAD',
-        placeHolder: 'path/to/file.txt'
+    return runCommand('restore file', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const filePath = await vscode.window.showInputBox({
+            prompt: 'Enter file path to restore from HEAD',
+            placeHolder: 'path/to/file.txt'
+        });
+
+        if (!filePath) {
+            return;
+        }
+
+        const confirm = await vscode.window.showWarningMessage(
+            `Restore ${filePath} from HEAD? This will discard working tree changes.`,
+            { modal: true },
+            'Restore'
+        );
+
+        if (confirm !== 'Restore') {
+            return;
+        }
+
+        await git.execGit(gitRoot, ['restore', '--source', 'HEAD', '--', filePath]);
+        vscode.window.showInformationMessage(`Restored ${filePath} from HEAD`);
     });
-
-    if (!filePath) {
-        return;
-    }
-
-    const confirm = await vscode.window.showWarningMessage(
-        `Restore ${filePath} from HEAD? This will discard working tree changes.`,
-        { modal: true },
-        'Restore'
-    );
-
-    if (confirm !== 'Restore') {
-        return;
-    }
-
-    await git.execGit(gitRoot, ['restore', '--source', 'HEAD', '--', filePath]);
-    vscode.window.showInformationMessage(`Restored ${filePath} from HEAD`);
 }
 
 async function cmdUtilsUnstageAll() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    const confirm = await vscode.window.showWarningMessage(
-        'Unstage all changes?',
-        { modal: true },
-        'Unstage'
-    );
+    return runCommand('unstage changes', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        const confirm = await vscode.window.showWarningMessage(
+            'Unstage all changes?',
+            { modal: true },
+            'Unstage'
+        );
 
-    if (confirm !== 'Unstage') {
-        return;
-    }
+        if (confirm !== 'Unstage') {
+            return;
+        }
 
-    await git.execGit(gitRoot, ['reset']);
-    vscode.window.showInformationMessage('All changes unstaged');
+        await git.execGit(gitRoot, ['reset']);
+        vscode.window.showInformationMessage('All changes unstaged');
+    });
 }
 
 async function cmdUtilsSetPrefix() {
-    const choice = await vscode.window.showQuickPick([
-        { label: 'Workspace Setting (applies to all repos)', value: 'workspace' },
-        { label: 'Repo-specific (.GIT_QUICKOPS_CONFIG file)', value: 'repo' },
-    ], { placeHolder: 'Where should the prefix be configured?' });
+    return runCommand('set prefix', async () => {
+        const choice = await vscode.window.showQuickPick([
+            { label: 'Workspace Setting (applies to all repos)', value: 'workspace' },
+            { label: 'Repo-specific (.GIT_QUICKOPS_CONFIG file)', value: 'repo' },
+        ], { placeHolder: 'Where should the prefix be configured?' });
 
-    if (!choice) {
-        return;
-    }
+        if (!choice) {
+            return;
+        }
 
-    const gitRoot = await RepositoryContext.getGitRoot();
-    const currentPrefix = await git.getCommitPrefix(gitRoot);
-    
-    const prefix = await vscode.window.showInputBox({
-        prompt: 'Enter commit prefix (use {{branch}} and {{ticket}} as placeholders)',
-        placeHolder: '{{ticket}}: ',
-        value: currentPrefix
+        const gitRoot = await RepositoryContext.getGitRoot();
+        const currentPrefix = await git.getCommitPrefix(gitRoot);
+        
+        const prefix = await vscode.window.showInputBox({
+            prompt: 'Enter commit prefix (use {{branch}} and {{ticket}} as placeholders)',
+            placeHolder: '{{ticket}}: ',
+            value: currentPrefix
+        });
+
+        if (prefix === undefined) {
+            return;
+        }
+
+        if (choice.value === 'workspace') {
+            const config = vscode.workspace.getConfiguration('gitQuickOps');
+            await config.update('commitPrefix', prefix, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage('Commit prefix updated in workspace settings');
+        } else {
+            const configFile = path.join(gitRoot, '.GIT_QUICKOPS_CONFIG');
+            const legacyPrefixFile = path.join(gitRoot, '.GIT_QUICKOPS_PREFIX');
+            const legacyHelperFile = path.join(gitRoot, '.GIT_HELPER_PREFIX');
+            
+            // Read existing config or create new one
+            const config = git.getRepoConfig(gitRoot);
+            config.commitPrefix = prefix;
+            git.setRepoConfig(gitRoot, config);
+            
+            let message = `Commit prefix saved to ${configFile}`;
+            if (fs.existsSync(legacyPrefixFile)) {
+                message += `\n\nNote: Legacy .GIT_QUICKOPS_PREFIX file exists. The new .GIT_QUICKOPS_CONFIG will take precedence.`;
+            }
+            if (fs.existsSync(legacyHelperFile)) {
+                message += `\n\nNote: Legacy .GIT_HELPER_PREFIX file exists. The new .GIT_QUICKOPS_CONFIG will take precedence.`;
+            }
+            vscode.window.showInformationMessage(message);
+        }
     });
-
-    if (prefix === undefined) {
-        return;
-    }
-
-    if (choice.value === 'workspace') {
-        const config = vscode.workspace.getConfiguration('gitQuickOps');
-        await config.update('commitPrefix', prefix, vscode.ConfigurationTarget.Global);
-        vscode.window.showInformationMessage('Commit prefix updated in workspace settings');
-    } else {
-        const configFile = path.join(gitRoot, '.GIT_QUICKOPS_CONFIG');
-        const legacyPrefixFile = path.join(gitRoot, '.GIT_QUICKOPS_PREFIX');
-        const legacyHelperFile = path.join(gitRoot, '.GIT_HELPER_PREFIX');
-        
-        // Read existing config or create new one
-        const config = git.getRepoConfig(gitRoot);
-        config.commitPrefix = prefix;
-        git.setRepoConfig(gitRoot, config);
-        
-        let message = `Commit prefix saved to ${configFile}`;
-        if (fs.existsSync(legacyPrefixFile)) {
-            message += `\n\nNote: Legacy .GIT_QUICKOPS_PREFIX file exists. The new .GIT_QUICKOPS_CONFIG will take precedence.`;
-        }
-        if (fs.existsSync(legacyHelperFile)) {
-            message += `\n\nNote: Legacy .GIT_HELPER_PREFIX file exists. The new .GIT_QUICKOPS_CONFIG will take precedence.`;
-        }
-        vscode.window.showInformationMessage(message);
-    }
 }
 
 // ========== New Interactive Tree Commands ==========
 
 async function cmdBranchSwitchTo(branchName: string) {
-    try {
+    return runCommand('switch branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['checkout', branchName]);
         vscode.window.showInformationMessage(`Switched to branch: ${branchName}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to switch branch: ${error}`);
-    }
+    });
 }
 
 async function cmdBranchCreateFromItem(branchName: string) {
-    try {
+    return runCommand('create branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const newBranchName = await vscode.window.showInputBox({
@@ -1709,13 +1725,11 @@ async function cmdBranchCreateFromItem(branchName: string) {
         
         await git.execGit(gitRoot, ['checkout', '-b', newBranchName, branchName]);
         vscode.window.showInformationMessage(`Created and switched to branch: ${newBranchName}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to create branch: ${error}`);
-    }
+    });
 }
 
 async function cmdBranchDeleteSpecific(branchName: string) {
-    try {
+    return runCommand('delete branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         const currentBranch = await git.getCurrentBranch(gitRoot);
         
@@ -1738,13 +1752,11 @@ async function cmdBranchDeleteSpecific(branchName: string) {
         const forceFlag = confirm === 'Force Delete' ? '-D' : '-d';
         await git.execGit(gitRoot, ['branch', forceFlag, branchName]);
         vscode.window.showInformationMessage(`Deleted branch: ${branchName}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to delete branch: ${error}`);
-    }
+    });
 }
 
 async function cmdBranchRenameSpecific(branchName: string) {
-    try {
+    return runCommand('rename branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const newName = await vscode.window.showInputBox({
@@ -1765,13 +1777,11 @@ async function cmdBranchRenameSpecific(branchName: string) {
         }
         
         vscode.window.showInformationMessage(`Renamed branch ${branchName} to ${newName}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to rename branch: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitView(commitData: any) {
-    try {
+    return runCommand('view commit', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         const details = await git.getCommitDetails(gitRoot, commitData.hash);
         
@@ -1781,13 +1791,11 @@ async function cmdCommitView(commitData: any) {
         });
         
         await vscode.window.showTextDocument(doc, { preview: true });
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to view commit: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitRewriteFrom(commitData: any) {
-    try {
+    return runCommand('start rebase', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const confirm = await vscode.window.showWarningMessage(
@@ -1809,13 +1817,11 @@ async function cmdCommitRewriteFrom(commitData: any) {
         terminal.sendText(`git rebase -i ${commitData.hash}^`);
         
         vscode.window.showInformationMessage('Interactive rebase started in terminal');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to start rebase: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitRewriteFromHash(commitHash: string) {
-    try {
+    return runCommand('start rebase', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const confirm = await vscode.window.showWarningMessage(
@@ -1837,49 +1843,39 @@ async function cmdCommitRewriteFromHash(commitHash: string) {
         terminal.sendText(`git rebase -i ${commitHash}^`);
         
         vscode.window.showInformationMessage('Interactive rebase started in terminal');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to start rebase: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitCherryPick(commitData: any) {
-    try {
+    return runCommand('cherry-pick', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['cherry-pick', commitData.hash]);
         vscode.window.showInformationMessage(`Cherry-picked commit: ${commitData.hash}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to cherry-pick: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitCherryPickHash(commitHash: string) {
-    try {
+    return runCommand('cherry-pick', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['cherry-pick', commitHash]);
         vscode.window.showInformationMessage(`Cherry-picked commit: ${commitHash}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to cherry-pick: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitRevert(commitData: any) {
-    try {
+    return runCommand('revert', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['revert', commitData.hash]);
         vscode.window.showInformationMessage(`Reverted commit: ${commitData.hash}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to revert: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitRevertHash(commitHash: string) {
-    try {
+    return runCommand('revert', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['revert', commitHash]);
         vscode.window.showInformationMessage(`Reverted commit: ${commitHash}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to revert: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitCopyHash(commitData: any) {
@@ -1888,7 +1884,7 @@ async function cmdCommitCopyHash(commitData: any) {
 }
 
 async function cmdCommitCreateBranch(commitData: any) {
-    try {
+    return runCommand('create branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const branchName = await vscode.window.showInputBox({
@@ -1912,13 +1908,11 @@ async function cmdCommitCreateBranch(commitData: any) {
             await git.execGit(gitRoot, ['branch', branchName, commitData.hash]);
             vscode.window.showInformationMessage(`Created branch: ${branchName}`);
         }
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to create branch: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitCreateBranchFromHash(commitHash: string) {
-    try {
+    return runCommand('create branch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
         const branchName = await vscode.window.showInputBox({
@@ -1942,13 +1936,11 @@ async function cmdCommitCreateBranchFromHash(commitHash: string) {
             await git.execGit(gitRoot, ['branch', branchName, commitHash]);
             vscode.window.showInformationMessage(`Created branch: ${branchName}`);
         }
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to create branch: ${error}`);
-    }
+    });
 }
 
 async function cmdFileOpenDiff(fileData: any) {
-    try {
+    return runCommand('open diff', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         const filePath = path.join(gitRoot, fileData.path);
         const uri = vscode.Uri.file(filePath);
@@ -1956,33 +1948,27 @@ async function cmdFileOpenDiff(fileData: any) {
         // Open diff view
         const gitUri = uri.with({ scheme: 'git', query: 'HEAD' });
         await vscode.commands.executeCommand('vscode.diff', gitUri, uri, `${fileData.path} (Working Tree)`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to open diff: ${error}`);
-    }
+    });
 }
 
 async function cmdFileStage(fileData: any) {
-    try {
+    return runCommand('stage file', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['add', fileData.path]);
         vscode.window.showInformationMessage(`Staged: ${fileData.path}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to stage file: ${error}`);
-    }
+    });
 }
 
 async function cmdFileUnstage(fileData: any) {
-    try {
+    return runCommand('unstage file', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['reset', 'HEAD', fileData.path]);
         vscode.window.showInformationMessage(`Unstaged: ${fileData.path}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to unstage file: ${error}`);
-    }
+    });
 }
 
 async function cmdFileDiscard(fileData: any) {
-    try {
+    return runCommand('discard changes', async () => {
         const confirm = await vscode.window.showWarningMessage(
             `Discard changes to ${fileData.path}?`,
             { modal: true },
@@ -1996,33 +1982,27 @@ async function cmdFileDiscard(fileData: any) {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['checkout', '--', fileData.path]);
         vscode.window.showInformationMessage(`Discarded changes: ${fileData.path}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to discard changes: ${error}`);
-    }
+    });
 }
 
 async function cmdStashApply(stashData: any) {
-    try {
+    return runCommand('apply stash', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['stash', 'apply', `stash@{${stashData.index}}`]);
         vscode.window.showInformationMessage('Stash applied');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to apply stash: ${error}`);
-    }
+    });
 }
 
 async function cmdStashPopSpecific(stashData: any) {
-    try {
+    return runCommand('pop stash', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['stash', 'pop', `stash@{${stashData.index}}`]);
         vscode.window.showInformationMessage('Stash popped');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to pop stash: ${error}`);
-    }
+    });
 }
 
 async function cmdStashDrop(stashData: any) {
-    try {
+    return runCommand('drop stash', async () => {
         const confirm = await vscode.window.showWarningMessage(
             'Drop this stash?',
             { modal: true },
@@ -2036,13 +2016,11 @@ async function cmdStashDrop(stashData: any) {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['stash', 'drop', `stash@{${stashData.index}}`]);
         vscode.window.showInformationMessage('Stash dropped');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to drop stash: ${error}`);
-    }
+    });
 }
 
 async function cmdStashView(stashData: any) {
-    try {
+    return runCommand('view stash', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         const details = await git.execGit(gitRoot, ['stash', 'show', '-p', `stash@{${stashData.index}}`]);
         
@@ -2052,61 +2030,30 @@ async function cmdStashView(stashData: any) {
         });
         
         await vscode.window.showTextDocument(doc, { preview: true });
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to view stash: ${error}`);
-    }
+    });
 }
 
 async function cmdRemoteAdd() {
-    try {
+    return runCommand('add remote', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await promptAddRemote(gitRoot);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to add remote: ${error}`);
-    }
+    });
 }
 
 async function cmdStageAll() {
-    try {
+    return runCommand('stage all changes', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['add', '-A']);
         vscode.window.showInformationMessage('All changes staged');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to stage all changes: ${error}`);
-    }
+    });
 }
 
 async function cmdCommitStaged() {
-    try {
+    return runCommand('commit', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
-        // Check tests before committing
-        let testResult: any;
-        
-        // Show running notification (without buttons so it auto-dismisses after ~5 seconds)
-        vscode.window.showInformationMessage('⏳ Running tests...');
-        
-        testResult = await git.checkTestsBeforeCommit(gitRoot);
-        
-        // Show result message (also auto-dismisses)
-        if (testResult.noTests) {
-            vscode.window.showInformationMessage('✅ No tests found - proceeding with commit');
-        } else if (testResult.passed) {
-            vscode.window.showInformationMessage('✅ Tests passed successfully');
-        }
-        
-        if (!testResult.canProceed) {
-            vscode.window.showErrorMessage(testResult.message || 'Commit blocked by tests');
+        if (!(await ensureTestsAllowCommit(gitRoot))) {
             return;
-        }
-        if (testResult.message && testResult.message.includes('Warning')) {
-            const choice = await vscode.window.showWarningMessage(
-                testResult.message,
-                'Commit Anyway', 'Cancel'
-            );
-            if (choice !== 'Commit Anyway') {
-                return;
-            }
         }
         
         // Get the processed prefix
@@ -2124,17 +2071,13 @@ async function cmdCommitStaged() {
         
         await git.execGit(gitRoot, ['commit', '-m', message]);
         vscode.window.showInformationMessage('Changes committed');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to commit: ${error}`);
-    }
+    });
 }
 
 async function cmdUnstageAll() {
-    try {
+    return runCommand('unstage all changes', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         await git.execGit(gitRoot, ['reset', 'HEAD']);
         vscode.window.showInformationMessage('All changes unstaged');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to unstage all changes: ${error}`);
-    }
+    });
 }
