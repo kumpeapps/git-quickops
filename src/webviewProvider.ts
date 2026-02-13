@@ -459,11 +459,11 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
         const staged = lines
             .filter(l => l.charAt(0) !== ' ' && l.charAt(0) !== '?')
             .map(l => {
-                // Git status format: "XY filename" 
-                // X = index status (position 0), Y = worktree status (position 1)
-                // Position 2 is space, filename starts at position 3
-                const statusChar = l.charAt(0);
-                const filePath = l.slice(3); // Get everything from position 3 onwards
+                // Git status format: "XY filename" where X and Y are status chars
+                // Use trimStart to handle any leading whitespace, then skip 2 status chars + space
+                const trimmed = l.trimStart();
+                const statusChar = trimmed.charAt(0);
+                const filePath = trimmed.slice(2).trim();
                 return {
                     status: statusChar,
                     path: filePath
@@ -473,8 +473,10 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
         const unstaged = lines
             .filter(l => l.charAt(1) !== ' ' || l.charAt(0) === '?')
             .map(l => {
-                const statusChar = l.charAt(1) !== ' ' ? l.charAt(1) : l.charAt(0);
-                const filePath = l.slice(3);
+                // Use trimStart to handle any leading whitespace, then parse status and filename  
+                const trimmed = l.trimStart();
+                const statusChar = trimmed.charAt(1) !== ' ' ? trimmed.charAt(1) : trimmed.charAt(0);
+                const filePath = trimmed.slice(2).trim();
                 return {
                     status: statusChar,
                     path: filePath
