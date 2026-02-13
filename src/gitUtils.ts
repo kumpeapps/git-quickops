@@ -9,6 +9,35 @@ export interface GitConfig {
 }
 
 /**
+ * Execute any command and return the output
+ */
+export async function execCommand(cwd: string, command: string, args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number; commandNotFound: boolean }> {
+    return new Promise((resolve) => {
+        cp.execFile(command, args, { cwd }, (error, stdout, stderr) => {
+            if (error) {
+                // Check if command doesn't exist
+                const commandNotFound = error.code === 'ENOENT' || 
+                                       stderr.includes('command not found') || 
+                                       stderr.includes('not recognized');
+                
+                // Get the actual exit code from the child process
+                // @ts-ignore - error has these properties
+                const exitCode = error.status !== undefined ? error.status : (commandNotFound ? 127 : 1);
+                
+                resolve({ 
+                    stdout: stdout ? stdout.trim() : '', 
+                    stderr: stderr ? stderr.trim() : error.message, 
+                    exitCode,
+                    commandNotFound
+                });
+            } else {
+                resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0, commandNotFound: false });
+            }
+        });
+    });
+}
+
+/**
  * Execute a git command and return the output
  */
 export async function execGit(cwd: string, args: string[]): Promise<string> {
@@ -165,17 +194,189 @@ export async function getStashes(gitRoot: string): Promise<string[]> {
 }
 
 /**
+ * Config structure for .GIT_QUICKOPS_CONFIG
+ */
+interface GitQuickOpsConfig {
+    commitPrefix?: string;
+    requireTests?: 'disabled' | 'warn' | 'prevent';
+    [key: string]: any;
+}
+
+/**
+ * Read config from .GIT_QUICKOPS_CONFIG file
+ */
+export function getRepoConfig(gitRoot: string): GitQuickOpsConfig {
+    const configFile = path.join(gitRoot, '.GIT_QUICKOPS_CONFIG');
+    if (fs.existsSync(configFile)) {
+        try {
+            const content = fs.readFileSync(configFile, 'utf-8');
+            return JSON.parse(content);
+        } catch {
+            return {};
+        }
+    }
+    return {};
+}
+
+/**
+ * Write config to .GIT_QUICKOPS_CONFIG file
+ */
+export function setRepoConfig(gitRoot: string, config: GitQuickOpsConfig): void {
+    const configFile = path.join(gitRoot, '.GIT_QUICKOPS_CONFIG');
+    fs.writeFileSync(configFile, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+/**
+ * Run tests in the repository
+ * Returns true if tests pass or no tests found, false if tests fail
+ */
+export async function runTests(gitRoot: string): Promise<{ passed: boolean; noTests: boolean; error?: string }> {
+    try {
+        // Try common test commands in order
+        const testCommands = [
+            { cmd: 'pytest', args: ['-q'], noTestExitCodes: [5], name: 'pytest' },
+            { cmd: 'npm', args: ['test'], noTestExitCodes: [], name: 'npm test' },
+            { cmd: 'npm', args: ['run', 'test'], noTestExitCodes: [], name: 'npm run test' },
+            { cmd: 'python', args: ['-m', 'pytest', '-q'], noTestExitCodes: [5], name: 'python -m pytest' },
+            { cmd: 'python', args: ['-m', 'unittest', 'discover'], noTestExitCodes: [], name: 'python unittest' }
+        ];
+
+        let foundTestRunner = false;
+        
+        for (const testCmd of testCommands) {
+            const result = await execCommand(gitRoot, testCmd.cmd, testCmd.args);
+            
+            // Skip if command doesn't exist
+            if (result.commandNotFound) {
+                continue;
+            }
+            
+            // Check for missing Python modules (pytest not installed)
+            if (result.stderr.includes('No module named pytest') || result.stderr.includes('ModuleNotFoundError')) {
+                // Try to install pytest
+                const pythonCmd = testCmd.cmd === 'pytest' ? 'python' : testCmd.cmd;
+                const installResult = await execCommand(gitRoot, pythonCmd, ['-m', 'pip', 'install', 'pytest']);
+                
+                if (installResult.exitCode === 0) {
+                    // Retry the test after installation
+                    const retryResult = await execCommand(gitRoot, testCmd.cmd, testCmd.args);
+                    
+                    if (retryResult.exitCode === 0) {
+                        return { passed: true, noTests: false };
+                    }
+                    
+                    if (testCmd.noTestExitCodes.includes(retryResult.exitCode)) {
+                        return { passed: true, noTests: true };
+                    }
+                    
+                    const errorMsg = retryResult.stderr || retryResult.stdout || `Tests failed with exit code ${retryResult.exitCode}`;
+                    return { passed: false, noTests: false, error: errorMsg };
+                } else {
+                    // Couldn't install pytest, try next test runner
+                    continue;
+                }
+            }
+            
+            // Check if this is a configuration issue (e.g., no package.json for npm)
+            const configErrors = [
+                'Could not read package.json',
+                'no such file or directory, open',
+                'package.json',
+                'Missing script',
+                'cannot find module',
+                'is not recognized as an internal or external command'
+            ];
+            
+            if (configErrors.some(err => result.stderr.includes(err) || result.stdout.includes(err))) {
+                // Test runner exists but project not configured for it - try next one
+                continue;
+            }
+            
+            // Command exists, so we found a test runner
+            foundTestRunner = true;
+            
+            // Exit code 0 - tests passed
+            if (result.exitCode === 0) {
+                return { passed: true, noTests: false };
+            }
+            
+            // Check exit code for "no tests found"
+            if (testCmd.noTestExitCodes.includes(result.exitCode)) {
+                // No tests found - treat as success
+                return { passed: true, noTests: true };
+            }
+            
+            // Tests exist but failed
+            const errorMsg = result.stderr || result.stdout || `Tests failed with exit code ${result.exitCode}`;
+            return { passed: false, noTests: false, error: errorMsg };
+        }
+        
+        // No test runner found - allow commit but note it
+        return { passed: true, noTests: !foundTestRunner };
+    } catch (error) {
+        // Unexpected error - allow commit
+        return { passed: true, noTests: true };
+    }
+}
+
+/**
+ * Check if tests should be run before commit and handle accordingly
+ * Returns true if commit can proceed, false if it should be blocked
+ */
+export async function checkTestsBeforeCommit(gitRoot: string): Promise<{ canProceed: boolean; message?: string }> {
+    const config = getRepoConfig(gitRoot);
+    const requireTests = config.requireTests || 'disabled';
+    
+    if (requireTests === 'disabled') {
+        return { canProceed: true };
+    }
+    
+    // Run tests
+    const testResult = await runTests(gitRoot);
+    
+    if (testResult.noTests) {
+        // No tests found - allow commit but inform user
+        return { canProceed: true, message: 'No tests found in repository' };
+    }
+    
+    if (testResult.passed) {
+        return { canProceed: true, message: 'Tests passed successfully' };
+    }
+    
+    // Tests failed
+    if (requireTests === 'warn') {
+        return { 
+            canProceed: true, 
+            message: `Warning: Tests failed - ${testResult.error || 'see output for details'}`
+        };
+    }
+    
+    // requireTests === 'prevent'
+    return { 
+        canProceed: false, 
+        message: `Commit blocked: Tests failed - ${testResult.error || 'see output for details'}`
+    };
+}
+
+/**
  * Get commit message prefix from config or repo file
  */
 export async function getCommitPrefix(gitRoot: string): Promise<string> {
     // Priority order:
-    // 1. .GIT_QUICKOPS_PREFIX file (new)
-    // 2. .GIT_HELPER_PREFIX file (legacy support)
-    // 3. GIT_QUICKOPS_PREFIX environment variable
-    // 4. GIT_HELPER_PREFIX environment variable (legacy support)
-    // 5. VS Code configuration setting
+    // 1. .GIT_QUICKOPS_CONFIG file (new JSON format)
+    // 2. .GIT_QUICKOPS_PREFIX file (backwards compatibility)
+    // 3. .GIT_HELPER_PREFIX file (legacy support)
+    // 4. GIT_QUICKOPS_PREFIX environment variable
+    // 5. GIT_HELPER_PREFIX environment variable (legacy support)
+    // 6. VS Code configuration setting
     
-    // Check .GIT_QUICKOPS_PREFIX file
+    // Check .GIT_QUICKOPS_CONFIG file
+    const config = getRepoConfig(gitRoot);
+    if (config.commitPrefix) {
+        return config.commitPrefix;
+    }
+    
+    // Check .GIT_QUICKOPS_PREFIX file (backwards compatibility)
     const prefixFile = path.join(gitRoot, '.GIT_QUICKOPS_PREFIX');
     if (fs.existsSync(prefixFile)) {
         try {
@@ -212,8 +413,8 @@ export async function getCommitPrefix(gitRoot: string): Promise<string> {
     }
     
     // Fall back to VS Code configuration
-    const config = vscode.workspace.getConfiguration('gitQuickOps');
-    return config.get<string>('commitPrefix', '');
+    const vsConfig = vscode.workspace.getConfiguration('gitQuickOps');
+    return vsConfig.get<string>('commitPrefix', '');
 }
 
 /**
@@ -227,30 +428,156 @@ export function extractTicketFromBranch(branchName: string): string {
 }
 
 /**
- * Process commit message prefix template
+ * Get the processed commit prefix (with variables replaced)
  */
-export async function processCommitPrefix(gitRoot: string, message: string): Promise<string> {
+export async function getProcessedPrefix(gitRoot: string): Promise<string> {
     const prefix = await getCommitPrefix(gitRoot);
     if (!prefix) {
-        return message;
+        return '';
     }
     
     const branch = await getCurrentBranch(gitRoot);
     const ticket = extractTicketFromBranch(branch);
     
-    let processedPrefix = prefix
+    return prefix
         .replace(/\{\{branch\}\}/g, branch)
         .replace(/\{\{ticket\}\}/g, ticket);
+}
+
+/**
+ * Process commit message prefix template
+ */
+export async function processCommitPrefix(gitRoot: string, message: string): Promise<string> {
+    const processedPrefix = await getProcessedPrefix(gitRoot);
+    if (!processedPrefix) {
+        return message;
+    }
     
     // If prefix ends with a space or message starts with a space, join directly
     // Otherwise add a space
     if (processedPrefix.endsWith(' ') || message.startsWith(' ')) {
         return processedPrefix + message;
-    } else if (processedPrefix) {
+    } else {
         return processedPrefix + ' ' + message;
     }
     
     return message;
+}
+
+/**
+ * Get list of commits with format: hash - message and graph
+ */
+export async function getCommits(gitRoot: string, limit: number = 50): Promise<Array<{hash: string, message: string, author: string, date: string, graph: string, graphRaw: string, refs: string, display: string, isMerge: boolean, graphCols: number}>> {
+    try {
+        // Use --graph with custom format to get proper graph lines
+        const output = await execGit(gitRoot, ['log', '--all', '--graph', '--oneline', '--decorate', '--color=never', `--pretty=format:%h|%s|%an|%ar|%D|%P`, `-n${limit}`]);
+        const lines = output.split('\n').filter(line => line);
+        
+        return lines.map((line, idx) => {
+            // Extract graph characters (everything before the hash)
+            const hashMatch = line.match(/([a-f0-9]{7,})\|/);
+            if (!hashMatch) {
+                return null;
+            }
+            
+            const hashIndex = line.indexOf(hashMatch[0]);
+            const graphRaw = line.substring(0, hashIndex);
+            
+            // Count graph columns (each column is 2 chars: a symbol and a space)
+            const graphCols = Math.ceil(graphRaw.length / 2);
+            
+            // Find the current commit position (where the * is)
+            const commitPosMatch = graphRaw.match(/(\*|o)/);
+            const commitPos = commitPosMatch ? Math.floor(graphRaw.indexOf(commitPosMatch[0]) / 2) : 0;
+            
+            // Check for merge/branch indicators
+            const hasBackslash = graphRaw.includes('\\');
+            const hasSlash = graphRaw.includes('/');
+            const isMerge = hasBackslash; // Line merges in
+            const isBranch = hasSlash;    // Line branches out
+            
+            // Parse commit data
+            const dataLine = line.substring(hashIndex).trim();
+            const parts = dataLine.split('|');
+            const hash = parts[0] || '';
+            const message = parts[1] || '';
+            const author = parts[2] || '';
+            const date = parts[3] || '';
+            const refs = parts[4] || '';
+            const parents = (parts[5] || '').trim();
+            
+            // Detect merge commits (have multiple parents)
+            const parentCount = parents.split(' ').filter(p => p).length;
+            const isActualMerge = parentCount > 1;
+            
+            // Clean the graph: keep only the essential structure (for tree view label)
+            const cleanGraph = graphRaw
+                .replace(/\*/g, '●')  // Convert * to filled circle
+                .replace(/o/g, '○')   // Convert o to hollow circle
+                .replace(/\|/g, '│')  // Vertical line
+                .replace(/\\/g, '╱')  // Merge line coming down
+                .replace(/\//g, '╱')   // Branch line going up
+                .replace(/_/g, '─');   // Horizontal line
+            
+            return {
+                hash,
+                message,
+                author,
+                date,
+                refs,
+                graph: cleanGraph,
+                graphRaw,
+                isMerge: isActualMerge,
+                graphCols,
+                display: `${hash} - ${message}`
+            };
+        })
+        .filter(commit => commit !== null) as Array<{hash: string, message: string, author: string, date: string, graph: string, graphRaw: string, refs: string, display: string, isMerge: boolean, graphCols: number}>;
+    } catch (error) {
+        return [];
+    }
+}
+
+/**
+ * Get detailed commit information
+ */
+export async function getCommitDetails(gitRoot: string, commitHash: string): Promise<string> {
+    try {
+        return await execGit(gitRoot, ['show', '--stat', commitHash]);
+    } catch (error) {
+        throw new Error(`Failed to get commit details: ${error}`);
+    }
+}
+
+/**
+ * Rewrite history from a specific commit forward
+ */
+export async function rewriteHistoryFrom(gitRoot: string, commitHash: string): Promise<void> {
+    try {
+        // Interactive rebase from the parent of the specified commit
+        await execGit(gitRoot, ['rebase', '-i', `${commitHash}^`]);
+    } catch (error) {
+        throw new Error(`Failed to start rebase: ${error}`);
+    }
+}
+
+/**
+ * Get all workspace folders that contain git repositories
+ */
+export async function getGitWorkspaceFolders(): Promise<Array<{folder: vscode.WorkspaceFolder, gitRoot: string}>> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const gitFolders: Array<{folder: vscode.WorkspaceFolder, gitRoot: string}> = [];
+    
+    for (const folder of folders) {
+        try {
+            const gitRoot = await getGitRoot(folder);
+            gitFolders.push({ folder, gitRoot });
+        } catch {
+            // Not a git repo, skip
+        }
+    }
+    
+    return gitFolders;
 }
 
 /**

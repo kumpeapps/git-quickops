@@ -3,10 +3,10 @@
   "displayName": "Git QuickOps",
   "description": "A comprehensive git operations toolkit with an intuitive menu-driven interface",
   "version": "0.0.1",
-  "publisher": "kumpeapps",
+  "publisher": "KumpeAppsLLC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kumpeapps/helper_scripts"
+    "url": "https://github.com/kumpeapps/git-quickops"
   },
   "engines": {
     "vscode": "^1.75.0"
@@ -16,7 +16,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:gitQuickOpsMenu"
+    "onCommand:git-quickops.showMenu"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -25,75 +25,302 @@
         {
           "id": "git-quickops",
           "title": "Git QuickOps",
-          "icon": "$(git-branch)"
+          "icon": "$(rocket)"
         }
       ]
     },
     "views": {
       "git-quickops": [
         {
+          "id": "gitQuickOpsRepositories",
+          "name": "Repositories",
+          "type": "webview"
+        },
+        {
           "id": "gitQuickOpsMenu",
-          "name": "Menu"
+          "name": "Menu",
+          "type": "webview"
+        },
+        {
+          "id": "gitQuickOpsChanges",
+          "name": "Changes",
+          "type": "webview"
+        },
+        {
+          "id": "gitQuickOpsCommits",
+          "name": "Commits",
+          "type": "webview"
         }
       ]
     },
     "commands": [
       {
+        "command": "git-quickops.refresh",
+        "title": "Refresh",
+        "category": "Git QuickOps",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "git-quickops.showMenu",
-        "title": "Git QuickOps: Show Main Menu",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.common",
-        "title": "Git QuickOps: Common Commands",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.branches",
-        "title": "Git QuickOps: Branch Management",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.history",
-        "title": "Git QuickOps: Commit History",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.cleanup",
-        "title": "Git QuickOps: Cleanup",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.stash",
-        "title": "Git QuickOps: Stash",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.tags",
-        "title": "Git QuickOps: Tags",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.remotes",
-        "title": "Git QuickOps: Remotes",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.utils",
-        "title": "Git QuickOps: Utilities",
-        "category": "Git QuickOps"
-      },
-      {
-        "command": "git-quickops.status",
-        "title": "Git QuickOps: Show Status",
-        "category": "Git QuickOps"
+        "title": "Show QuickOps Menu",
+        "category": "Git QuickOps",
+        "icon": "$(menu)"
       },
       {
         "command": "git-quickops.addCommitPush",
-        "title": "Git QuickOps: Add → Commit → Push",
-        "category": "Git QuickOps"
+        "title": "Add → Commit → Push",
+        "category": "Git QuickOps",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "git-quickops.commit.rewriteFrom",
+        "title": "Rewrite History From Here",
+        "category": "Git QuickOps",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "git-quickops.commit.cherryPick",
+        "title": "Cherry Pick Commit",
+        "category": "Git QuickOps",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "git-quickops.commit.revert",
+        "title": "Revert Commit",
+        "category": "Git QuickOps",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "git-quickops.commit.copyHash",
+        "title": "Copy Commit Hash",
+        "category": "Git QuickOps",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "git-quickops.commit.createBranch",
+        "title": "Create Branch From Commit",
+        "category": "Git QuickOps",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "git-quickops.file.openDiff",
+        "title": "Open Diff",
+        "category": "Git QuickOps",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "git-quickops.stageAll",
+        "title": "Stage All Changes",
+        "category": "Git QuickOps",
+        "icon": "$(add)"
+      },
+      {
+        "command": "git-quickops.commit",
+        "title": "Commit Staged Changes",
+        "category": "Git QuickOps",
+        "icon": "$(check)"
+      },
+      {
+        "command": "git-quickops.unstageAll",
+        "title": "Unstage All Changes",
+        "category": "Git QuickOps",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "git-quickops.selectRepository",
+        "title": "Select Repository",
+        "category": "Git QuickOps",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "git-quickops.file.stage",
+        "title": "Stage File",
+        "category": "Git QuickOps",
+        "icon": "$(add)"
+      },
+      {
+        "command": "git-quickops.file.unstage",
+        "title": "Unstage File",
+        "category": "Git QuickOps",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "git-quickops.file.discard",
+        "title": "Discard Changes",
+        "category": "Git QuickOps",
+        "icon": "$(discard)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "git-quickops.showMenu",
+          "when": "gitOpenRepositoryCount != 0"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "git-quickops.showMenu",
+          "group": "navigation",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "git-quickops.cmd.addCommitPush",
+          "group": "1_quickops@1",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "git-quickops.cmd.branchCreate",
+          "group": "2_branches@1",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "git-quickops.cmd.historyRewriteToSingle",
+          "group": "3_history@1",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "git-quickops.cmd.cleanupDeleteMerged",
+          "group": "4_cleanup@1",
+          "when": "scmProvider == git"
+        }
+      ],
+      "scm/resourceGroup/context": [
+        {
+          "command": "git-quickops.cmd.utilsUnstageAll",
+          "when": "scmProvider == git && scmResourceGroup == index",
+          "group": "inline"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "git-quickops.file.openDiff",
+          "when": "scmProvider == git",
+          "group": "1_modification"
+        },
+        {
+          "command": "git-quickops.cmd.utilsRestoreFile",
+          "when": "scmProvider == git",
+          "group": "1_modification"
+        }
+      ],
+      "timeline/item/context": [
+        {
+          "command": "git-quickops.commit.rewriteFrom",
+          "when": "timelineItem =~ /git:commit\\b/",
+          "group": "1_history@1"
+        },
+        {
+          "command": "git-quickops.commit.cherryPick",
+          "when": "timelineItem =~ /git:commit\\b/",
+          "group": "1_history@2"
+        },
+        {
+          "command": "git-quickops.commit.revert",
+          "when": "timelineItem =~ /git:commit\\b/",
+          "group": "1_history@3"
+        },
+        {
+          "command": "git-quickops.commit.createBranch",
+          "when": "timelineItem =~ /git:commit\\b/",
+          "group": "2_branch@1"
+        },
+        {
+          "command": "git-quickops.commit.copyHash",
+          "when": "timelineItem =~ /git:commit\\b/",
+          "group": "9_cutcopypaste"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "git-quickops.refresh",
+          "when": "view == gitQuickOpsChanges || view == gitQuickOpsCommits",
+          "group": "navigation"
+        },
+        {
+          "command": "git-quickops.cmd.push",
+          "when": "view == gitQuickOpsChanges",
+          "group": "navigation@1"
+        },
+        {
+          "command": "git-quickops.cmd.pull",
+          "when": "view == gitQuickOpsChanges",
+          "group": "navigation@2"
+        },
+        {
+          "command": "git-quickops.cmd.commit",
+          "when": "view == gitQuickOpsChanges",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "git-quickops.file.stage",
+          "when": "view == gitQuickOpsChanges && viewItem == unstagedFile",
+          "group": "inline"
+        },
+        {
+          "command": "git-quickops.file.unstage",
+          "when": "view == gitQuickOpsChanges && viewItem == stagedFile",
+          "group": "inline"
+        },
+        {
+          "command": "git-quickops.file.openDiff",
+          "when": "view == gitQuickOpsChanges && viewItem =~ /File$/",
+          "group": "navigation"
+        },
+        {
+          "command": "git-quickops.file.discard",
+          "when": "view == gitQuickOpsChanges && viewItem =~ /File$/",
+          "group": "1_modification"
+        },
+        {
+          "command": "git-quickops.commit.view",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "inline"
+        },
+        {
+          "command": "git-quickops.commit.rewriteFrom",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "1_history@1"
+        },
+        {
+          "command": "git-quickops.commit.cherryPick",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "1_history@2"
+        },
+        {
+          "command": "git-quickops.commit.revert",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "1_history@3"
+        },
+        {
+          "command": "git-quickops.commit.createBranch",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "2_branch@1"
+        },
+        {
+          "command": "git-quickops.commit.copyHash",
+          "when": "view == gitQuickOpsCommits && viewItem == commitItem",
+          "group": "9_cutcopypaste"
+        },
+        {
+          "command": "git-quickops.stageAll",
+          "when": "view == gitQuickOpsChanges && viewItem == unstagedChanges",
+          "group": "inline"
+        },
+        {
+          "command": "git-quickops.commit",
+          "when": "view == gitQuickOpsChanges && viewItem == stagedChanges",
+          "group": "inline"
+        },
+        {
+          "command": "git-quickops.unstageAll",
+          "when": "view == gitQuickOpsChanges && viewItem == stagedChanges",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Git QuickOps",
       "properties": {
