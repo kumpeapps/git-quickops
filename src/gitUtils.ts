@@ -422,8 +422,18 @@ export async function getCommitPrefix(gitRoot: string): Promise<string> {
  * Supports patterns like: feature/PROJ-123-description, PROJ-123, etc.
  */
 export function extractTicketFromBranch(branchName: string): string {
-    // Match patterns like PROJ-123, ABC-456, etc.
-    const match = branchName.match(/([A-Z]+-\d+)/);
+    const lastSeparator = Math.max(
+        branchName.lastIndexOf('-'),
+        branchName.lastIndexOf('_'),
+        branchName.lastIndexOf('/')
+    );
+
+    if (lastSeparator === -1 || lastSeparator >= branchName.length - 1) {
+        return '';
+    }
+
+    const suffix = branchName.slice(lastSeparator + 1);
+    const match = suffix.match(/(\d+)/);
     return match ? match[1] : '';
 }
 
