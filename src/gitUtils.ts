@@ -48,7 +48,7 @@ export async function execGit(cwd: string, args: string[]): Promise<string> {
             if (error) {
                 reject(new Error(stderr || error.message));
             } else {
-                resolve(stdout.trim());
+                resolve(stdout.trimEnd());
             }
         });
     });
