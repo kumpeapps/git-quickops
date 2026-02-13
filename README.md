@@ -1,5 +1,7 @@
 # Git QuickOps VS Code Extension
 
+![Git QuickOps Logo](icon.png)
+
 A comprehensive git operations toolkit with an intuitive menu-driven interface, bringing the power of the git-quickops shell script directly into VS Code.
 
 ## Features

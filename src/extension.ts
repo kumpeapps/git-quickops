@@ -1104,6 +1104,8 @@ async function cmdHistoryRewriteToSingle() {
         await git.execGit(gitRoot, ['reset', '--soft', `${selectedCommit.commit.hash}~1`]);
         await git.execGit(gitRoot, ['commit', '-m', message]);
         vscode.window.showInformationMessage(`Branch rewritten to single commit from ${selectedCommit.commit.hash}`);
+        // Refresh tree views immediately to show updated commit history
+        await vscode.commands.executeCommand('git-quickops.refresh');
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to rewrite: ${error}`);
     }
@@ -1126,6 +1128,8 @@ async function cmdHistoryRebaseOnto() {
     try {
         await git.runGitCommand(gitRoot, ['rebase', targetBranch], `Rebase onto ${targetBranch}`);
         vscode.window.showInformationMessage(`Rebased onto ${targetBranch}`);
+        // Refresh tree views immediately to show updated commit history
+        await vscode.commands.executeCommand('git-quickops.refresh');
     } catch (error) {
         vscode.window.showErrorMessage(`Rebase failed: ${error}`);
     }

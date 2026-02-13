@@ -467,10 +467,12 @@ export async function processCommitPrefix(gitRoot: string, message: string): Pro
 /**
  * Get list of commits with format: hash - message and graph
  */
-export async function getCommits(gitRoot: string, limit: number = 50): Promise<Array<{hash: string, message: string, author: string, date: string, graph: string, graphRaw: string, refs: string, display: string, isMerge: boolean, graphCols: number}>> {
+export async function getCommits(gitRoot: string, limit: number = 50, showAllBranches: boolean = false): Promise<Array<{hash: string, message: string, author: string, date: string, graph: string, graphRaw: string, refs: string, display: string, isMerge: boolean, graphCols: number}>> {
     try {
         // Use --graph with custom format to get proper graph lines
-        const output = await execGit(gitRoot, ['log', '--all', '--graph', '--oneline', '--decorate', '--color=never', `--pretty=format:%h|%s|%an|%ar|%D|%P`, `-n${limit}`]);
+        // By default show only current branch (like VS Code default), use showAllBranches=true for all branches
+        const branchArg = showAllBranches ? '--all' : 'HEAD';
+        const output = await execGit(gitRoot, ['log', branchArg, '--graph', '--oneline', '--decorate', '--color=never', `--pretty=format:%h|%s|%an|%ar|%D|%P`, `-n${limit}`]);
         const lines = output.split('\n').filter(line => line);
         
         return lines.map((line, idx) => {

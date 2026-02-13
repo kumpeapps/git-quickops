@@ -4,6 +4,7 @@
   "description": "A comprehensive git operations toolkit with an intuitive menu-driven interface",
   "version": "0.0.1",
   "publisher": "KumpeAppsLLC",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/kumpeapps/git-quickops"
@@ -25,7 +26,7 @@
         {
           "id": "git-quickops",
           "title": "Git QuickOps",
-          "icon": "$(rocket)"
+          "icon": "icon-sidebar.png"
         }
       ]
     },
