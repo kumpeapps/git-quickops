@@ -52,6 +52,7 @@ You can also access specific categories directly:
 - **Create Branch** - Create and switch to new branch
 - **Create Branch From...** - Create branch from specific commit/branch
 - **Switch Branch** - Switch to existing branch
+- **Checkout from Remote** - Fetch and checkout branches from remote that don't exist locally
 - **Rename Branch** - Rename current branch
 - **Delete Branch** - Delete one or more branches
 - **Merge Branch** - Merge another branch into current
