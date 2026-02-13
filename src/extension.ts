@@ -746,35 +746,208 @@ async function cmdAddCommitPush() {
     
     // Push
     const branch = await git.getCurrentBranch(gitRoot);
+    const pushTarget = await resolvePushTarget(gitRoot, branch);
+    if (!pushTarget) {
+        return;
+    }
+
+    try {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `Pushing to ${pushTarget.display}...`,
+            cancellable: false
+        }, async () => {
+            await git.execGit(gitRoot, pushTarget.args);
+        });
+
+        vscode.window.showInformationMessage(`Changes pushed to ${pushTarget.display}`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Push failed: ${error}`);
+    }
+}
+
+async function resolvePushTarget(gitRoot: string, branch: string): Promise<{ args: string[]; display: string } | null> {
+    const upstream = await getBranchUpstream(gitRoot, branch);
+    if (upstream) {
+        return { args: ['push'], display: `${upstream.remote}/${upstream.branch}` };
+    }
+
     const config = vscode.workspace.getConfiguration('gitQuickOps');
     const defaultRemote = config.get<string>('defaultRemote', 'origin');
-    
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: `Pushing to ${defaultRemote}/${branch}...`,
-        cancellable: false
-    }, async () => {
-        await git.execGit(gitRoot, ['push', defaultRemote, branch]);
+    const remote = await selectRemoteForPush(gitRoot, defaultRemote);
+    if (!remote) {
+        return null;
+    }
+
+    const confirm = await vscode.window.showQuickPick(['Yes', 'No'], {
+        placeHolder: `No upstream set for ${branch}. Push and set upstream to ${remote}/${branch}?`
     });
-    
-    vscode.window.showInformationMessage(`Changes pushed to ${defaultRemote}/${branch}`);
+
+    if (confirm !== 'Yes') {
+        return null;
+    }
+
+    return { args: ['push', '-u', remote, branch], display: `${remote}/${branch}` };
+}
+
+async function getBranchUpstream(gitRoot: string, branch: string): Promise<{ remote: string; branch: string } | null> {
+    try {
+        const upstream = await git.execGit(gitRoot, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{u}`]);
+        const separatorIndex = upstream.indexOf('/');
+        if (separatorIndex === -1) {
+            return null;
+        }
+
+        return {
+            remote: upstream.slice(0, separatorIndex),
+            branch: upstream.slice(separatorIndex + 1)
+        };
+    } catch {
+        return null;
+    }
+}
+
+async function selectRemoteForPush(gitRoot: string, defaultRemote: string): Promise<string | null> {
+    let remotes = await git.getRemotes(gitRoot);
+
+    if (remotes.length === 0) {
+        const addChoice = await vscode.window.showWarningMessage(
+            'No remotes are configured for this repository.',
+            'Add Remote',
+            'Cancel'
+        );
+
+        if (addChoice !== 'Add Remote') {
+            return null;
+        }
+
+        const addedRemote = await promptAddRemote(gitRoot);
+        if (!addedRemote) {
+            return null;
+        }
+
+        remotes = await git.getRemotes(gitRoot);
+    }
+
+    if (remotes.includes(defaultRemote)) {
+        return defaultRemote;
+    }
+
+    if (remotes.length === 1) {
+        return remotes[0];
+    }
+
+    const items: vscode.QuickPickItem[] = remotes.map(remote => ({ label: remote }));
+    items.push({ label: 'Add new remote...', description: 'Configure a new remote' });
+
+    const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select remote for push'
+    });
+
+    if (!selected) {
+        return null;
+    }
+
+    if (selected.label === 'Add new remote...') {
+        return await promptAddRemote(gitRoot);
+    }
+
+    return selected.label;
+}
+
+async function promptAddRemote(gitRoot: string): Promise<string | null> {
+    const existingRemotes = await git.getRemotes(gitRoot);
+
+    let remoteName: string;
+    while (true) {
+        const input = await vscode.window.showInputBox({
+            prompt: 'Enter remote name',
+            placeHolder: 'origin'
+        });
+
+        if (!input) {
+            // User cancelled the input
+            return null;
+        }
+
+        const trimmed = input.trim();
+        if (!trimmed) {
+            vscode.window.showErrorMessage('Remote name cannot be empty or whitespace.');
+            continue;
+        }
+
+        if (/\s/.test(trimmed)) {
+            vscode.window.showErrorMessage('Remote name cannot contain whitespace.');
+            continue;
+        }
+
+        remoteName = trimmed;
+        break;
+    }
+
+    let remoteUrl: string;
+    while (true) {
+        const input = await vscode.window.showInputBox({
+            prompt: 'Enter remote URL',
+            placeHolder: 'https://github.com/user/repo.git'
+        });
+
+        if (!input) {
+            // User cancelled the input
+            return null;
+        }
+
+        const trimmed = input.trim();
+        if (!trimmed) {
+            vscode.window.showErrorMessage('Remote URL cannot be empty or whitespace.');
+            continue;
+        }
+
+        remoteUrl = trimmed;
+        break;
+    }
+
+    if (existingRemotes.includes(remoteName)) {
+        const overwrite = await vscode.window.showWarningMessage(
+            `Remote "${remoteName}" already exists. Update its URL?`,
+            'Update',
+            'Cancel'
+        );
+
+        if (overwrite !== 'Update') {
+            return null;
+        }
+
+        await git.execGit(gitRoot, ['remote', 'set-url', remoteName, remoteUrl]);
+    } else {
+        await git.execGit(gitRoot, ['remote', 'add', remoteName, remoteUrl]);
+    }
+
+    vscode.window.showInformationMessage(`Remote configured: ${remoteName}`);
+    return remoteName;
 }
 
 async function cmdPush() {
     const gitRoot = await RepositoryContext.getGitRoot();
     const branch = await git.getCurrentBranch(gitRoot);
-    const config = vscode.workspace.getConfiguration('gitQuickOps');
-    const defaultRemote = config.get<string>('defaultRemote', 'origin');
-    
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: `Pushing to ${defaultRemote}/${branch}...`,
-        cancellable: false
-    }, async () => {
-        await git.runGitCommand(gitRoot, ['push', defaultRemote, branch], 'Git Push');
-    });
-    
-    vscode.window.showInformationMessage(`Pushed to ${defaultRemote}/${branch}`);
+    const pushTarget = await resolvePushTarget(gitRoot, branch);
+    if (!pushTarget) {
+        return;
+    }
+
+    try {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `Pushing to ${pushTarget.display}...`,
+            cancellable: false
+        }, async () => {
+            await git.runGitCommand(gitRoot, pushTarget.args, 'Git Push');
+        });
+
+        vscode.window.showInformationMessage(`Pushed to ${pushTarget.display}`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Push failed: ${error}`);
+    }
 }
 
 async function cmdPull() {
@@ -1887,27 +2060,7 @@ async function cmdStashView(stashData: any) {
 async function cmdRemoteAdd() {
     try {
         const gitRoot = await RepositoryContext.getGitRoot();
-        
-        const remoteName = await vscode.window.showInputBox({
-            prompt: 'Enter remote name',
-            placeHolder: 'origin'
-        });
-        
-        if (!remoteName) {
-            return;
-        }
-        
-        const remoteUrl = await vscode.window.showInputBox({
-            prompt: 'Enter remote URL',
-            placeHolder: 'https://github.com/user/repo.git'
-        });
-        
-        if (!remoteUrl) {
-            return;
-        }
-        
-        await git.execGit(gitRoot, ['remote', 'add', remoteName, remoteUrl]);
-        vscode.window.showInformationMessage(`Added remote: ${remoteName}`);
+        await promptAddRemote(gitRoot);
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to add remote: ${error}`);
     }

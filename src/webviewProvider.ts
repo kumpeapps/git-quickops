@@ -34,9 +34,6 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
             await this._handleMessage(data);
         });
 
-        // Initial update
-        this.refresh();
-
         // Auto-refresh (but not for setup view to allow form interaction)
         setInterval(() => {
             if (this._viewType !== 'setup') {
@@ -47,6 +44,9 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
 
     private async _handleMessage(data: any) {
         switch (data.command) {
+            case 'webviewReady':
+                this.refresh();
+                break;
             case 'selectRepository':
                 await RepositoryContext.selectRepository();
                 this.refresh();
@@ -509,14 +509,10 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
             <link href="${styleUri}" rel="stylesheet">
             <title>Git QuickOps</title>
         </head>
-        <body class="${this._viewType}-view">
+        <body class="${this._viewType}-view" data-view-type="${this._viewType}">
             <div id="container">
                 <div id="content">Loading...</div>
             </div>
-            <script>
-                const vscode = acquireVsCodeApi();
-                const viewType = '${this._viewType}';
-            </script>
             <script src="${scriptUri}"></script>
         </body>
         </html>`;
