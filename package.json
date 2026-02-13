@@ -17,7 +17,10 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:git-quickops.showMenu"
+    "onView:gitQuickOpsRepositories",
+    "onView:gitQuickOpsMenu",
+    "onView:gitQuickOpsChanges",
+    "onView:gitQuickOpsCommits"
   ],
   "main": "./out/extension.js",
   "contributes": {
