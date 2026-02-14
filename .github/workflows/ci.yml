@@ -1,0 +1,133 @@
+name: CI Build and Test
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18.x, 20.x]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Lint code
+        run: npm run lint
+      
+      - name: Compile TypeScript
+        run: npm run compile
+      
+      - name: Run build test
+        run: npm run test:build
+      
+      - name: Package extension
+        run: npx @vscode/vsce package
+      
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+        with:
+          name: git-quickops-vsix
+          path: '*.vsix'
+          retention-days: 7
+      
+      - name: Run integration tests (Ubuntu)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:integration
+      
+      - name: Run integration tests (macOS)
+        if: runner.os == 'macOS'
+        run: npm run test:integration
+      
+      - name: Run integration tests (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:integration
+  
+  lint-check:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run ESLint
+        run: npm run lint
+      
+      - name: Check TypeScript compilation
+        run: npm run compile
+  
+  validate-package:
+    name: Validate Package
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Validate package.json
+        run: |
+          node -e "const pkg = require('./package.json'); console.log('Package validation passed');"
+      
+      - name: Check for missing fields
+        run: |
+          node -e "
+          const pkg = require('./package.json');
+          const required = ['name', 'displayName', 'version', 'publisher', 'engines', 'categories', 'main'];
+          const missing = required.filter(f => !pkg[f]);
+          if (missing.length) {
+            console.error('Missing required fields:', missing);
+            process.exit(1);
+          }
+          console.log('All required fields present');
+          "
+      
+      - name: Compile and package
+        run: |
+          npm run compile
+          npx @vscode/vsce package --no-dependencies
+      
+      - name: Verify VSIX creation
+        run: |
+          if [ ! -f *.vsix ]; then
+            echo "VSIX file was not created"
+            exit 1
+          fi
+          echo "VSIX file created successfully"

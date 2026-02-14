@@ -420,14 +420,23 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "npm run test:build",
+    "test:integration": "node ./out/test/runTest.js",
+    "test:build": "npm run compile && node -e \"require('./out/test/suite/buildRunner').run().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); })\"",
+    "test:compile": "tsc -p ./ && echo 'Build successful'",
+    "validate": "bash scripts/validate.sh || scripts\\validate.bat"
   },
   "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
     "@types/node": "^18.x",
     "@types/vscode": "^1.75.0",
     "@typescript-eslint/eslint-plugin": "^6.x",
     "@typescript-eslint/parser": "^6.x",
+    "@vscode/test-electron": "^2.3.9",
     "eslint": "^8.x",
+    "glob": "^10.3.10",
+    "mocha": "^10.3.0",
     "typescript": "^5.x"
   }
 }

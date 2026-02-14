@@ -1,0 +1,4 @@
+{
+  "prefix": "{{ticket}}",
+  "requireTests": "prevent"
+}
