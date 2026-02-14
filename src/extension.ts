@@ -687,7 +687,7 @@ async function cmdAdd() {
 
             if (selected && selected.length > 0) {
                 for (const file of selected) {
-                    await git.execGit(gitRoot, ['add', file.label]);
+                    await git.runGitCommand(gitRoot, ['add', file.label], `Add ${file.label}`);
                 }
                 vscode.window.showInformationMessage(`Added ${selected.length} file(s)`);
             }
@@ -736,11 +736,7 @@ async function cmdAddCommitPush() {
             return;
         }
         
-        // Add all changes
-        await git.execGit(gitRoot, ['add', '-A']);
-        vscode.window.showInformationMessage('Changes added');
-        
-        // Get commit message
+        // Get commit message first
         const prefix = await git.getProcessedPrefix(gitRoot);
         const message = await vscode.window.showInputBox({
             prompt: 'Enter commit message',
@@ -752,11 +748,15 @@ async function cmdAddCommitPush() {
             return;
         }
 
-        // Commit
+        // Add all changes (use execGit to wait for completion)
+        await git.execGit(gitRoot, ['add', '-A']);
+        vscode.window.showInformationMessage('Changes added');
+        
+        // Commit (use execGit to wait for completion)
         await git.execGit(gitRoot, ['commit', '-m', message]);
         vscode.window.showInformationMessage('Changes committed');
         
-        // Push
+        // Push using terminal (interactive for authentication)
         const branch = await git.getCurrentBranch(gitRoot);
         const pushTarget = await resolvePushTarget(gitRoot, branch);
         if (!pushTarget) {
@@ -768,7 +768,7 @@ async function cmdAddCommitPush() {
             title: `Pushing to ${pushTarget.display}...`,
             cancellable: false
         }, async () => {
-            await git.execGit(gitRoot, pushTarget.args);
+            await git.runGitCommandInteractive(gitRoot, pushTarget.args, 'Push Changes');
         });
 
         vscode.window.showInformationMessage(`Changes pushed to ${pushTarget.display}`);
@@ -927,9 +927,9 @@ async function promptAddRemote(gitRoot: string): Promise<string | null> {
             return null;
         }
 
-        await git.execGit(gitRoot, ['remote', 'set-url', remoteName, remoteUrl]);
+        await git.runGitCommand(gitRoot, ['remote', 'set-url', remoteName, remoteUrl], `Set Remote ${remoteName}`);
     } else {
-        await git.execGit(gitRoot, ['remote', 'add', remoteName, remoteUrl]);
+        await git.runGitCommand(gitRoot, ['remote', 'add', remoteName, remoteUrl], `Add Remote ${remoteName}`);
     }
 
     vscode.window.showInformationMessage(`Remote configured: ${remoteName}`);
@@ -950,7 +950,7 @@ async function cmdPush() {
             title: `Pushing to ${pushTarget.display}...`,
             cancellable: false
         }, async () => {
-            await git.runGitCommand(gitRoot, pushTarget.args, 'Git Push');
+            await git.runGitCommandInteractive(gitRoot, pushTarget.args, 'Git Push');
         });
 
         vscode.window.showInformationMessage(`Pushed to ${pushTarget.display}`);
@@ -961,13 +961,11 @@ async function cmdPull() {
     return runCommand('pull', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Pulling changes...',
-            cancellable: false
-        }, async () => {
-            await git.runGitCommand(gitRoot, ['pull'], 'Git Pull');
-        });
+        // Use interactive terminal for pull (may require authentication)
+        await git.runGitCommandInteractive(gitRoot, ['pull'], 'Git Pull');
+        
+        // Wait a moment for command to start, then show completion
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         vscode.window.showInformationMessage('Changes pulled');
     });
@@ -977,13 +975,11 @@ async function cmdFetch() {
     return runCommand('fetch', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Fetching from remote...',
-            cancellable: false
-        }, async () => {
-            await git.runGitCommand(gitRoot, ['fetch', '--all'], 'Git Fetch');
-        });
+        // Use interactive terminal for fetch (may require authentication)
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '--all'], 'Git Fetch');
+        
+        // Wait a moment for command to start, then show completion
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         vscode.window.showInformationMessage('Fetched from remote');
     });
@@ -1027,7 +1023,7 @@ async function cmdBranchCreate() {
             return;
         }
 
-        await git.execGit(gitRoot, ['checkout', '-b', branchName]);
+        await git.runGitCommand(gitRoot, ['checkout', '-b', branchName], `Create ${branchName}`);
         vscode.window.showInformationMessage(`Created and switched to branch: ${branchName}`);
     });
 }
@@ -1054,7 +1050,7 @@ async function cmdBranchCreateFrom() {
             return;
         }
 
-        await git.execGit(gitRoot, ['checkout', '-b', branchName, sourceBranch]);
+        await git.runGitCommand(gitRoot, ['checkout', '-b', branchName, sourceBranch], `Create ${branchName}`);
         vscode.window.showInformationMessage(`Created branch ${branchName} from ${sourceBranch}`);
     });
 }
@@ -1074,69 +1070,68 @@ async function cmdBranchSwitch() {
             return;
         }
 
-        await git.execGit(gitRoot, ['checkout', branch]);
+        await git.runGitCommand(gitRoot, ['checkout', branch], `Checkout ${branch}`);
         vscode.window.showInformationMessage(`Switched to branch: ${branch}`);
     });
 }
 
 async function cmdBranchCheckoutFromRemote() {
-    const gitRoot = await RepositoryContext.getGitRoot();
-    
-    // Fetch from remote to get latest branches
-    await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Fetching remote branches...',
-        cancellable: false
-    }, async () => {
-        await git.execGit(gitRoot, ['fetch', '--all']);
+    return runCommand('checkout from remote', async () => {
+        const gitRoot = await RepositoryContext.getGitRoot();
+        
+        // Fetch latest branches using interactive terminal
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '--all'], 'Fetch Remote Branches');
+        
+        // Wait a moment for fetch to start
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Get all branches including remote
+        const allBranches = await git.getBranches(gitRoot, true);
+        const localBranches = await git.getBranches(gitRoot, false);
+        
+        // Filter to only remote branches and format them
+        const remoteBranches = allBranches
+            .filter(b => b.startsWith('remotes/'))
+            .map(b => {
+                // Extract branch name from remotes/origin/branch-name
+                const match = b.match(/^remotes\/([^\/]+)\/(.+)$/);
+                if (match) {
+                    const remote = match[1];
+                    const branchName = match[2];
+                    return {
+                        label: branchName,
+                        description: `from ${remote}`,
+                        remote: remote,
+                        branchName: branchName,
+                        fullPath: b
+                    };
+                }
+                return null;
+            })
+            .filter(b => b !== null) as Array<{label: string; description: string; remote: string; branchName: string; fullPath: string}>;
+        
+        // Filter out branches that already exist locally
+        const availableRemoteBranches = remoteBranches.filter(rb => 
+            !localBranches.includes(rb.branchName)
+        );
+        
+        if (availableRemoteBranches.length === 0) {
+            vscode.window.showInformationMessage('All remote branches are already checked out locally');
+            return;
+        }
+        
+        const selected = await vscode.window.showQuickPick(availableRemoteBranches, {
+            placeHolder: 'Select a remote branch to checkout'
+        });
+        
+        if (!selected) {
+            return;
+        }
+        
+        // Checkout the branch (this will create a local tracking branch) using terminal
+        await git.runGitCommandInteractive(gitRoot, ['checkout', '-b', selected.branchName, selected.fullPath], `Checkout ${selected.branchName}`);
+        vscode.window.showInformationMessage(`Checked out branch: ${selected.branchName}`);
     });
-    
-    // Get all branches including remote
-    const allBranches = await git.getBranches(gitRoot, true);
-    const localBranches = await git.getBranches(gitRoot, false);
-    
-    // Filter to only remote branches and format them
-    const remoteBranches = allBranches
-        .filter(b => b.startsWith('remotes/'))
-        .map(b => {
-            // Extract branch name from remotes/origin/branch-name
-            const match = b.match(/^remotes\/([^\/]+)\/(.+)$/);
-            if (match) {
-                const remote = match[1];
-                const branchName = match[2];
-                return {
-                    label: branchName,
-                    description: `from ${remote}`,
-                    remote: remote,
-                    branchName: branchName,
-                    fullPath: b
-                };
-            }
-            return null;
-        })
-        .filter(b => b !== null) as Array<{label: string; description: string; remote: string; branchName: string; fullPath: string}>;
-    
-    // Filter out branches that already exist locally
-    const availableRemoteBranches = remoteBranches.filter(rb => 
-        !localBranches.includes(rb.branchName)
-    );
-    
-    if (availableRemoteBranches.length === 0) {
-        vscode.window.showInformationMessage('All remote branches are already checked out locally');
-        return;
-    }
-    
-    const selected = await vscode.window.showQuickPick(availableRemoteBranches, {
-        placeHolder: 'Select a remote branch to checkout'
-    });
-    
-    if (!selected) {
-        return;
-    }
-    
-    // Checkout the branch (this will create a local tracking branch)
-    await git.execGit(gitRoot, ['checkout', '-b', selected.branchName, selected.fullPath]);
-    vscode.window.showInformationMessage(`Checked out branch: ${selected.branchName}`);
 }
 
 async function cmdBranchRename() {
@@ -1154,7 +1149,7 @@ async function cmdBranchRename() {
             return;
         }
 
-        await git.execGit(gitRoot, ['branch', '-m', newName]);
+        await git.runGitCommand(gitRoot, ['branch', '-m', newName], `Rename to ${newName}`);
         vscode.window.showInformationMessage(`Branch renamed to: ${newName}`);
     });
 }
@@ -1186,7 +1181,7 @@ async function cmdBranchDelete() {
 
         for (const branch of selected) {
             try {
-                await git.execGit(gitRoot, ['branch', '-D', branch.label]);
+                await git.runGitCommand(gitRoot, ['branch', '-D', branch.label], `Delete ${branch.label}`);
             } catch (error) {
                 vscode.window.showErrorMessage(`Failed to delete ${branch.label}: ${error}`);
             }
@@ -1211,7 +1206,7 @@ async function cmdMerge() {
             return;
         }
 
-        await git.runGitCommand(gitRoot, ['merge', branch], `Merge ${branch}`);
+        await git.runGitCommandInteractive(gitRoot, ['merge', branch], `Merge ${branch}`);
         vscode.window.showInformationMessage(`Merged ${branch} into ${currentBranch}`);
     });
 }
@@ -1271,9 +1266,9 @@ async function cmdHistoryRewriteToSingle() {
             return;
         }
 
-        // Reset to the commit before the selected one
-        await git.execGit(gitRoot, ['reset', '--soft', `${selectedCommit.commit.hash}~1`]);
-        await git.execGit(gitRoot, ['commit', '-m', message]);
+        // Reset to the commit before the selected one using terminal
+        await git.runGitCommand(gitRoot, ['reset', '--soft', `${selectedCommit.commit.hash}~1`], 'Reset');
+        await git.runGitCommand(gitRoot, ['commit', '-m', message], 'Commit');
         vscode.window.showInformationMessage(`Branch rewritten to single commit from ${selectedCommit.commit.hash}`);
         // Refresh tree views immediately to show updated commit history
         await vscode.commands.executeCommand('git-quickops.refresh');
@@ -1295,7 +1290,7 @@ async function cmdHistoryRebaseOnto() {
             return;
         }
 
-        await git.runGitCommand(gitRoot, ['rebase', targetBranch], `Rebase onto ${targetBranch}`);
+        await git.runGitCommandInteractive(gitRoot, ['rebase', targetBranch], `Rebase onto ${targetBranch}`);
         vscode.window.showInformationMessage(`Rebased onto ${targetBranch}`);
         // Refresh tree views immediately to show updated commit history
         await vscode.commands.executeCommand('git-quickops.refresh');
@@ -1322,7 +1317,7 @@ async function cmdHistorySquashN() {
             return;
         }
 
-        await git.runGitCommand(gitRoot, ['rebase', '-i', `HEAD~${n}`], `Squash ${n} commits`);
+        await git.runGitCommandInteractive(gitRoot, ['rebase', '-i', `HEAD~${n}`], `Squash ${n} commits`);
         vscode.window.showInformationMessage('Interactive rebase started. Complete in terminal.');
     });
 }
@@ -1341,7 +1336,7 @@ async function cmdHistoryUndoLast() {
             return;
         }
 
-        await git.execGit(gitRoot, ['reset', '--soft', 'HEAD~1']);
+        await git.runGitCommand(gitRoot, ['reset', '--soft', 'HEAD~1'], 'Undo Last Commit');
         vscode.window.showInformationMessage('Last commit undone, changes kept');
     });
 }
@@ -1363,7 +1358,7 @@ async function cmdHistoryAmendMessage() {
             return;
         }
 
-        await git.execGit(gitRoot, ['commit', '--amend', '-m', message]);
+        await git.runGitCommand(gitRoot, ['commit', '--amend', '-m', message], 'Amend Commit');
         vscode.window.showInformationMessage('Commit message amended');
     });
 }
@@ -1372,14 +1367,12 @@ async function cmdCleanupPruneFetch() {
     return runCommand('fetch and prune', async () => {
         const gitRoot = await RepositoryContext.getGitRoot();
         
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Fetching and pruning...',
-            cancellable: false
-        }, async () => {
-            await git.execGit(gitRoot, ['fetch', '--all']);
-            await git.execGit(gitRoot, ['fetch', '-p']);
-        });
+        // Fetch and prune using interactive terminal
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '--all'], 'Fetch All');
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '-p'], 'Fetch Prune');
+        
+        // Wait for commands to start
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         vscode.window.showInformationMessage('Fetched and pruned');
     });
@@ -1390,11 +1383,14 @@ async function cmdCleanupDeleteOrphans() {
         const gitRoot = await RepositoryContext.getGitRoot();
         const defaultBranch = await git.getDefaultBranch(gitRoot);
         
-        // Switch to default branch
-        await git.execGit(gitRoot, ['checkout', defaultBranch]);
+        // Switch to default branch using interactive terminal
+        await git.runGitCommandInteractive(gitRoot, ['checkout', defaultBranch], `Checkout ${defaultBranch}`);
         
-        // Fetch and prune
-        await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
+        // Fetch and prune using interactive terminal
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '--all', '--prune'], 'Fetch and Prune');
+        
+        // Wait for commands to start
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
         // Get remote branches
         const remoteBranches = await git.getBranches(gitRoot, true);
@@ -1436,7 +1432,7 @@ async function cmdCleanupDeleteOrphans() {
         }
 
         for (const branch of selected) {
-            await git.execGit(gitRoot, ['branch', '-D', branch.label]);
+            await git.runGitCommand(gitRoot, ['branch', '-D', branch.label], `Delete ${branch.label}`);
         }
         
         vscode.window.showInformationMessage(`Deleted ${selected.length} orphan branch(es)`);
@@ -1448,8 +1444,11 @@ async function cmdCleanupDeleteMerged() {
         const gitRoot = await RepositoryContext.getGitRoot();
         const defaultBranch = await git.getDefaultBranch(gitRoot);
         
-        // Fetch to ensure we have latest
-        await git.execGit(gitRoot, ['fetch', '--all', '--prune']);
+        // Fetch to ensure we have latest using interactive terminal
+        await git.runGitCommandInteractive(gitRoot, ['fetch', '--all', '--prune'], 'Fetch Branches');
+        
+        // Wait for fetch to start
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Get merged branches
         const output = await git.execGit(gitRoot, ['branch', '--merged', defaultBranch]);

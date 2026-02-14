@@ -153,6 +153,66 @@
         "title": "Discard Changes",
         "category": "Git QuickOps",
         "icon": "$(discard)"
+      },
+      {
+        "command": "git-quickops.cmd.addCommitPush",
+        "title": "Add → Commit → Push",
+        "category": "Git QuickOps",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "git-quickops.cmd.push",
+        "title": "Push",
+        "category": "Git QuickOps",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "git-quickops.cmd.pull",
+        "title": "Pull",
+        "category": "Git QuickOps",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "git-quickops.cmd.commit",
+        "title": "Commit",
+        "category": "Git QuickOps",
+        "icon": "$(check)"
+      },
+      {
+        "command": "git-quickops.cmd.branchCreate",
+        "title": "Create Branch",
+        "category": "Git QuickOps",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "git-quickops.cmd.historyRewriteToSingle",
+        "title": "Rewrite History to Single Commit",
+        "category": "Git QuickOps",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "git-quickops.cmd.cleanupDeleteMerged",
+        "title": "Delete Merged Branches",
+        "category": "Git QuickOps",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "git-quickops.cmd.utilsUnstageAll",
+        "title": "Unstage All",
+        "category": "Git QuickOps",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "git-quickops.cmd.utilsRestoreFile",
+        "title": "Restore File",
+        "category": "Git QuickOps",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "git-quickops.commit.view",
+        "title": "View Commit",
+        "category": "Git QuickOps",
+        "icon": "$(eye)"
       }
     ],
     "menus": {
@@ -338,6 +398,18 @@
           "type": "string",
           "default": "origin",
           "description": "Default remote name for push/pull operations"
+        },
+        "gitQuickOps.commandTimeout": {
+          "type": "number",
+          "default": 30000,
+          "description": "Timeout in milliseconds for non-git commands (0 for no timeout)",
+          "minimum": 0
+        },
+        "gitQuickOps.gitTimeout": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout in milliseconds for git operations (0 for no timeout). Default is 5 minutes for large repos and slow networks.",
+          "minimum": 0
         }
       }
     }
