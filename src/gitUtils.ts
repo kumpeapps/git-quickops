@@ -9,29 +9,85 @@ export interface GitConfig {
 }
 
 /**
+ * Manages reusable terminals for git repositories
+ */
+class GitTerminalManager {
+    private terminals = new Map<string, vscode.Terminal>();
+
+    getForRepo(gitRoot: string): vscode.Terminal {
+        const existing = this.terminals.get(gitRoot);
+        if (existing) {
+            return existing;
+        }
+
+        const cwdUri = vscode.Uri.file(gitRoot);
+        const terminal = vscode.window.createTerminal({
+            name: `Git: ${path.basename(gitRoot)}`,
+            cwd: cwdUri
+        });
+
+        this.terminals.set(gitRoot, terminal);
+
+        const disposable = vscode.window.onDidCloseTerminal(closed => {
+            if (closed === terminal) {
+                this.terminals.delete(gitRoot);
+                disposable.dispose();
+            }
+        });
+
+        return terminal;
+    }
+}
+
+const gitTerminalManager = new GitTerminalManager();
+
+/**
+ * Shell-escape a string for safe use in shell commands
+ */
+function shellEscape(arg: string): string {
+    // Simple shell escaping: wrap in single quotes and escape any single quotes
+    return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * Execute any command and return the output
  */
 export async function execCommand(cwd: string, command: string, args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number; commandNotFound: boolean }> {
     return new Promise((resolve) => {
-        cp.execFile(command, args, { cwd }, (error, stdout, stderr) => {
+        const timeout = vscode.workspace.getConfiguration('gitQuickOps').get<number>('commandTimeout') || 30000;
+        
+        const options: cp.ExecFileOptions = {
+            cwd,
+            timeout: timeout || undefined,  // 0 means no timeout
+            maxBuffer: 8 * 1024 * 1024,  // 8MB buffer to prevent deadlocks
+        };
+        
+        cp.execFile(command, args, options, (error, stdout, stderr) => {
             if (error) {
+                // Convert Buffer to string if needed
+                const stderrStr = typeof stderr === 'string' ? stderr : stderr.toString();
+                
                 // Check if command doesn't exist
                 const commandNotFound = error.code === 'ENOENT' || 
-                                       stderr.includes('command not found') || 
-                                       stderr.includes('not recognized');
+                                       stderrStr.includes('command not found') || 
+                                       stderrStr.includes('not recognized');
                 
                 // Get the actual exit code from the child process
                 // @ts-ignore - error has these properties
                 const exitCode = error.status !== undefined ? error.status : (commandNotFound ? 127 : 1);
                 
+                const stdoutStr = typeof stdout === 'string' ? stdout : stdout.toString();
+                
                 resolve({ 
-                    stdout: stdout ? stdout.trim() : '', 
-                    stderr: stderr ? stderr.trim() : error.message, 
+                    stdout: stdoutStr ? stdoutStr.trim() : '', 
+                    stderr: stderrStr ? stderrStr.trim() : error.message, 
                     exitCode,
                     commandNotFound
                 });
             } else {
-                resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0, commandNotFound: false });
+                const stdoutStr = typeof stdout === 'string' ? stdout : stdout.toString();
+                const stderrStr = typeof stderr === 'string' ? stderr : stderr.toString();
+                resolve({ stdout: stdoutStr.trim(), stderr: stderrStr.trim(), exitCode: 0, commandNotFound: false });
             }
         });
     });
@@ -39,19 +95,68 @@ export async function execCommand(cwd: string, command: string, args: string[]):
 
 /**
  * Execute a git command and return the output
+ * For interactive operations (authentication, conflict resolution), use runGitCommandInteractive instead
  */
 export async function execGit(cwd: string, args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
         const gitPath = vscode.workspace.getConfiguration('git').get<string>('path') || 'git';
+        const timeout = vscode.workspace.getConfiguration('gitQuickOps').get<number>('gitTimeout') || 300000;
         
-        cp.execFile(gitPath, args, { cwd }, (error, stdout, stderr) => {
+        const options: cp.ExecFileOptions = {
+            cwd,
+            timeout: timeout || undefined,  // 0 means no timeout
+            maxBuffer: 8 * 1024 * 1024,  // 8MB buffer to prevent deadlocks on large output
+        };
+        
+        cp.execFile(gitPath, args, options, (error, stdout, stderr) => {
             if (error) {
-                reject(new Error(stderr || error.message));
+                const stderrStr = typeof stderr === 'string' ? stderr : stderr.toString();
+                const stdoutStr = typeof stdout === 'string' ? stdout : stdout.toString();
+                
+                // Provide better error context for enterprise repo issues
+                let errorMsg = stderrStr || error.message;
+                
+                // Check for common enterprise authentication issues
+                if (errorMsg.includes('fatal: could not read') || errorMsg.includes('permission denied')) {
+                    errorMsg += '. Check SSH key configuration or authentication credentials.';
+                } else if (errorMsg.includes('Connection refused') || errorMsg.includes('Network unreachable')) {
+                    errorMsg += '. Network or proxy issue. Check your connection and firewall settings.';
+                } else if (errorMsg.includes('merge conflict') || errorMsg.includes('CONFLICT')) {
+                    errorMsg += '. Merge conflicts detected. Resolve manually or use git pull with merge strategy.';
+                }
+                
+                // Include stdout if it has diagnostic info
+                if (stdoutStr && stdoutStr.length > 0 && stdoutStr.length < 500) {
+                    errorMsg = `${errorMsg}\n\nOutput: ${stdoutStr}`;
+                }
+                
+                reject(new Error(errorMsg));
             } else {
-                resolve(stdout.trimEnd());
+                const stdoutStr = typeof stdout === 'string' ? stdout : stdout.toString();
+                resolve(stdoutStr.trimEnd());
             }
         });
     });
+}
+
+/**
+ * Execute a git command in the integrated terminal (allows for interactive operations like authentication)
+ * This is useful for enterprise repos that might need credential entry
+ * Reuses the same terminal per repository to avoid window clutter
+ */
+export async function execGitInTerminal(cwd: string, args: string[]): Promise<void> {
+    const gitPath = vscode.workspace.getConfiguration('git').get<string>('path') || 'git';
+    
+    // Get or create a terminal for this repository
+    const terminal = gitTerminalManager.getForRepo(cwd);
+    
+    // Shell-escape git path and arguments to handle spaces and special characters
+    const escapedGitPath = shellEscape(gitPath);
+    const escapedArgs = args.map(arg => shellEscape(arg)).join(' ');
+    
+    // Send the git command to the terminal
+    terminal.sendText(`${escapedGitPath} ${escapedArgs}`);
+    terminal.show();
 }
 
 /**
@@ -605,7 +710,7 @@ export function showInTerminal(title: string, command: string, cwd: string): voi
 }
 
 /**
- * Run git command and show result in output channel
+ * Run git command non-interactively and show result in output channel
  */
 export async function runGitCommand(gitRoot: string, args: string[], title?: string): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel(title || 'Git QuickOps');
@@ -622,4 +727,13 @@ export async function runGitCommand(gitRoot: string, args: string[], title?: str
         outputChannel.appendLine(`✗ Error: ${error}`);
         throw error;
     }
+}
+
+/**
+ * Run git command interactively in a terminal
+ * Use this for operations that may require user input (authentication, conflict resolution, etc.)
+ * Note: This returns immediately after sending the command, not when it completes
+ */
+export async function runGitCommandInteractive(gitRoot: string, args: string[], title?: string): Promise<void> {
+    await execGitInTerminal(gitRoot, args);
 }
