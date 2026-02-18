@@ -305,10 +305,37 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
             
             // Force push to remote
             try {
-                await git.execGit(gitRoot, ['push', '--force-with-lease']);
+                const branch = currentBranch.trim();
+                // Try to get upstream tracking branch
+                let pushArgs: string[];
+                try {
+                    const upstream = await git.execGit(gitRoot, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{u}`]);
+                    const upstreamTrimmed = upstream.trim();
+                    const separatorIndex = upstreamTrimmed.indexOf('/');
+                    if (separatorIndex !== -1) {
+                        const remote = upstreamTrimmed.slice(0, separatorIndex);
+                        const remoteBranch = upstreamTrimmed.slice(separatorIndex + 1);
+                        pushArgs = ['push', remote, branch, '--force-with-lease'];
+                    } else {
+                        // No valid upstream format, use origin as fallback
+                        pushArgs = ['push', 'origin', branch, '--force-with-lease'];
+                    }
+                } catch (upstreamError) {
+                    // No upstream configured, select a remote explicitly
+                    const remotes = await git.getRemotes(gitRoot);
+                    if (remotes.length === 0) {
+                        throw new Error('No remote configured for push');
+                    }
+                    // Prefer 'origin' if available, otherwise use the first remote
+                    const remote = remotes.find(r => r === 'origin') || remotes[0];
+                    pushArgs = ['push', remote, branch, '--force-with-lease'];
+                }
+                
+                await git.execGit(gitRoot, pushArgs);
                 vscode.window.showInformationMessage(`${count + 1} commits squashed and force pushed successfully`);
             } catch (pushError) {
-                vscode.window.showWarningMessage(`Commits squashed locally but push failed: ${pushError}. You may need to manually push.`);
+                const errorMessage = pushError instanceof Error ? pushError.message : String(pushError);
+                vscode.window.showWarningMessage(`Commits squashed locally but push failed: ${errorMessage}. You may need to manually push.`);
             }
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to squash commits: ${error}`);
