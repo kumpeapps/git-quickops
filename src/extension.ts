@@ -799,6 +799,35 @@ async function resolvePushTarget(gitRoot: string, branch: string): Promise<{ arg
     return { args: ['push', '-u', remote, branch], display: `${remote}/${branch}` };
 }
 
+async function promptForcePushAfterRewrite(gitRoot: string, actionLabel: string): Promise<void> {
+    const branch = await git.getCurrentBranch(gitRoot);
+    const forcePushChoice = await vscode.window.showWarningMessage(
+        `${actionLabel} rewrites commit history and usually requires a force push. Force push now?`,
+        { modal: true },
+        'Force Push',
+        'Skip'
+    );
+
+    if (forcePushChoice !== 'Force Push') {
+        return;
+    }
+
+    const pushTarget = await git.resolveForcePushTarget(gitRoot, branch);
+    if (!pushTarget) {
+        return;
+    }
+
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Force pushing to ${pushTarget.display}...`,
+        cancellable: false
+    }, async () => {
+        await git.runGitCommandInteractive(gitRoot, pushTarget.args, 'Git Force Push');
+    });
+
+    vscode.window.showInformationMessage(`Force push started in terminal to ${pushTarget.display}. Complete authentication if prompted.`);
+}
+
 async function getBranchUpstream(gitRoot: string, branch: string): Promise<{ remote: string; branch: string } | null> {
     try {
         const upstream = await git.execGit(gitRoot, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{u}`]);
@@ -1272,6 +1301,7 @@ async function cmdHistoryRewriteToSingle() {
         vscode.window.showInformationMessage(`Branch rewritten to single commit from ${selectedCommit.commit.hash}`);
         // Refresh tree views immediately to show updated commit history
         await vscode.commands.executeCommand('git-quickops.refresh');
+        await promptForcePushAfterRewrite(gitRoot, 'Rewrite to single commit');
     });
 }
 
@@ -1338,6 +1368,7 @@ async function cmdHistoryUndoLast() {
 
         await git.runGitCommand(gitRoot, ['reset', '--soft', 'HEAD~1'], 'Undo Last Commit');
         vscode.window.showInformationMessage('Last commit undone, changes kept');
+        await promptForcePushAfterRewrite(gitRoot, 'Undo last commit');
     });
 }
 
@@ -1360,6 +1391,7 @@ async function cmdHistoryAmendMessage() {
 
         await git.runGitCommand(gitRoot, ['commit', '--amend', '-m', message], 'Amend Commit');
         vscode.window.showInformationMessage('Commit message amended');
+        await promptForcePushAfterRewrite(gitRoot, 'Amend commit message');
     });
 }
 
