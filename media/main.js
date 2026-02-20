@@ -119,6 +119,11 @@
             const textWrap = createEl('div');
             textWrap.style.flex = '1';
             textWrap.appendChild(createEl('div', 'nav-label', repo.name));
+
+            const branch = createEl('div', 'nav-description', `🌿 ${repo.branch || 'unknown'}`);
+            branch.style.fontSize = '11px';
+            textWrap.appendChild(branch);
+
             const desc = createEl('div', 'nav-description', repo.path);
             desc.style.fontSize = '11px';
             textWrap.appendChild(desc);

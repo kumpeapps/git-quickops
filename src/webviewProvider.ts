@@ -7,6 +7,8 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _viewType: string;
     private _navigationStack: string[] = [];
+    private _branchLabelCache = new Map<string, { label: string; updatedAt: number }>();
+    private readonly _branchLabelCacheTtlMs = 30000;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -353,6 +355,15 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    public invalidateRepositoryBranchCache(gitRoot?: string) {
+        if (gitRoot) {
+            this._branchLabelCache.delete(gitRoot);
+            return;
+        }
+
+        this._branchLabelCache.clear();
+    }
+
     private async _getData(): Promise<any> {
         try {
             const gitRoot = await RepositoryContext.getGitRoot();
@@ -360,14 +371,7 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
 
             switch (this._viewType) {
                 case 'repositories':
-                    return {
-                        type: 'repositories',
-                        repos: gitFolders.map(gf => ({
-                            name: path.basename(gf.gitRoot),
-                            path: gf.gitRoot
-                        })),
-                        selectedRepo: gitRoot
-                    };
+                    return await this._getRepositoriesData(gitFolders, gitRoot);
                 case 'menu':
                     // Determine current menu level from navigation stack
                     const currentMenuId = this._navigationStack.length > 0 
@@ -395,6 +399,59 @@ export class GitQuickOpsWebviewProvider implements vscode.WebviewViewProvider {
             }
         } catch (error) {
             return { error: 'No git repository' };
+        }
+    }
+
+    private async _getRepositoriesData(gitFolders: Array<{ gitRoot: string }>, selectedRepo: string): Promise<any> {
+        const activeRepoRoots = new Set(gitFolders.map(gf => gf.gitRoot));
+        for (const cachedRepo of this._branchLabelCache.keys()) {
+            if (!activeRepoRoots.has(cachedRepo)) {
+                this._branchLabelCache.delete(cachedRepo);
+            }
+        }
+
+        const repos = await Promise.all(gitFolders.map(async (gf) => {
+            const branch = await this._getCachedRepositoryBranchLabel(gf.gitRoot);
+            return {
+                name: path.basename(gf.gitRoot),
+                path: gf.gitRoot,
+                branch
+            };
+        }));
+
+        return {
+            type: 'repositories',
+            repos,
+            selectedRepo
+        };
+    }
+
+    private async _getCachedRepositoryBranchLabel(gitRoot: string): Promise<string> {
+        const cached = this._branchLabelCache.get(gitRoot);
+        if (cached && (Date.now() - cached.updatedAt) < this._branchLabelCacheTtlMs) {
+            return cached.label;
+        }
+
+        const label = await this._getRepositoryBranchLabel(gitRoot);
+        this._branchLabelCache.set(gitRoot, { label, updatedAt: Date.now() });
+        return label;
+    }
+
+    private async _getRepositoryBranchLabel(gitRoot: string): Promise<string> {
+        try {
+            const branch = (await git.getCurrentBranch(gitRoot)).trim();
+            if (!branch) {
+                return 'unknown';
+            }
+
+            if (branch === 'HEAD') {
+                return 'detached';
+            }
+
+            return branch;
+        } catch (error) {
+            console.error(`[Git QuickOps] Failed to resolve branch for repository: ${gitRoot}`, error);
+            return 'unknown';
         }
     }
 

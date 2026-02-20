@@ -7,6 +7,25 @@ import { GitQuickOpsWebviewProvider } from './webviewProvider';
 
 const EXTENSION_VERSION = '1.0.0';
 
+interface RepositoryState {
+    onDidChange: vscode.Event<void>;
+}
+
+interface Repository {
+    rootUri: vscode.Uri;
+    state: RepositoryState;
+}
+
+interface GitAPI {
+    repositories: Repository[];
+    onDidOpenRepository: vscode.Event<Repository>;
+    onDidCloseRepository: vscode.Event<Repository>;
+}
+
+interface GitExtensionExports {
+    getAPI(version: 1): GitAPI;
+}
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('Git QuickOps extension is now active');
 
@@ -23,31 +42,35 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerWebviewViewProvider('gitQuickOpsCommits', commitsProvider)
     );
 
-    // Listen to repository changes and refresh all webviews
-    RepositoryContext.onDidChangeRepo(() => {
+    const refreshAllViews = () => {
         repositoriesProvider.refresh();
         menuProvider.refresh();
         changesProvider.refresh();
         commitsProvider.refresh();
+    };
+
+    void subscribeToGitStateChanges(
+        context,
+        refreshAllViews,
+        (gitRoot?: string) => repositoriesProvider.invalidateRepositoryBranchCache(gitRoot)
+    );
+
+    // Listen to repository changes and refresh all webviews
+    RepositoryContext.onDidChangeRepo(() => {
+        refreshAllViews();
     });
 
     // Register all commands
     context.subscriptions.push(
         // Refresh command
         vscode.commands.registerCommand('git-quickops.refresh', () => {
-            repositoriesProvider.refresh();
-            menuProvider.refresh();
-            changesProvider.refresh();
-            commitsProvider.refresh();
+            refreshAllViews();
         }),
         
         // Repository selector command
         vscode.commands.registerCommand('git-quickops.selectRepository', async () => {
             await RepositoryContext.selectRepository();
-            repositoriesProvider.refresh();
-            menuProvider.refresh();
-            changesProvider.refresh();
-            commitsProvider.refresh();
+            refreshAllViews();
         }),
         
         // Legacy menu commands
@@ -259,6 +282,70 @@ vscode.commands.registerCommand('git-quickops.unstageAll', async () => {
 }
 
 export function deactivate() {}
+
+async function subscribeToGitStateChanges(
+    context: vscode.ExtensionContext,
+    refreshAllViews: () => void,
+    invalidateRepoBranchCache: (gitRoot?: string) => void
+): Promise<void> {
+    const gitExtension = vscode.extensions.getExtension('vscode.git');
+    if (!gitExtension) {
+        console.error('[Git QuickOps] Git extension "vscode.git" not found; git state event integration disabled.');
+        return;
+    }
+
+    try {
+        const gitExports = (gitExtension.isActive ? gitExtension.exports : await gitExtension.activate()) as GitExtensionExports;
+        const gitApi = gitExports?.getAPI?.(1);
+        if (!gitApi) {
+            console.error('[Git QuickOps] Failed to acquire Git API v1 from "vscode.git"; falling back to interval refresh.');
+            return;
+        }
+
+        const repoListeners = new Map<string, vscode.Disposable>();
+
+        const attachRepositoryListener = (repository: Repository) => {
+            const rootPath = repository.rootUri.fsPath;
+            if (!rootPath || repoListeners.has(rootPath)) {
+                return;
+            }
+
+            const listener = repository.state.onDidChange(() => {
+                invalidateRepoBranchCache(rootPath);
+                refreshAllViews();
+            });
+
+            repoListeners.set(rootPath, listener);
+            context.subscriptions.push(listener);
+        };
+
+        gitApi.repositories.forEach((repository: Repository) => attachRepositoryListener(repository));
+
+        context.subscriptions.push(gitApi.onDidOpenRepository((repository: Repository) => {
+            attachRepositoryListener(repository);
+            invalidateRepoBranchCache(repository.rootUri.fsPath);
+            refreshAllViews();
+        }));
+
+        context.subscriptions.push(gitApi.onDidCloseRepository((repository: Repository) => {
+            const rootPath = repository.rootUri.fsPath;
+            if (!rootPath) {
+                return;
+            }
+
+            const listener = repoListeners.get(rootPath);
+            if (listener) {
+                listener.dispose();
+                repoListeners.delete(rootPath);
+            }
+
+            invalidateRepoBranchCache(rootPath);
+            refreshAllViews();
+        }));
+    } catch (error) {
+        console.error('[Git QuickOps] Error initializing Git integration; falling back to interval refresh.', error);
+    }
+}
 
 // ========== Main Menu ==========
 

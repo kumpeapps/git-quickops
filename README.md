@@ -7,6 +7,7 @@ A comprehensive git operations toolkit with an intuitive menu-driven interface, 
 ## Features
 
 - **Menu-driven interface** - Easy-to-navigate quick pick menus for all git operations
+- **Repository branch visibility** - Repositories section shows the current branch for each repo with live updates
 - **Common Commands** - Quick access to status, add, commit, push, pull, fetch, log, and diff
 - **Branch Management** - Create, switch, rename, delete, and merge branches with ease
 - **Commit History** - Rewrite, rebase, squash, undo, and amend commits
@@ -171,17 +172,6 @@ This extension is part of the [kumpeapps/helper_scripts](https://github.com/kump
 ## License
 
 See the LICENSE file in the repository root.
-
-## Changelog
-
-### 1.0.0
-- Initial release
-- Converted from bash script to VS Code extension
-- Full feature parity with git-quickops.sh
-- Added VS Code-native UI integration
-- Support for commit message prefixing
-- Multi-select operations for branch deletion
-- Output channels for command results
 
 ## Related
 
