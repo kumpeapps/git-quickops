@@ -8,6 +8,24 @@ export interface GitConfig {
     userEmail?: string;
 }
 
+interface GitRepository {
+    rootUri: vscode.Uri;
+}
+
+interface GitAPI {
+    repositories: GitRepository[];
+}
+
+interface GitExtensionExports {
+    getAPI(version: 1): GitAPI;
+}
+
+let gitWorkspaceFoldersCache: {
+    signature: string;
+    expiresAt: number;
+    result: Array<{ folder: vscode.WorkspaceFolder; gitRoot: string }>;
+} | undefined;
+
 /**
  * Manages reusable terminals for git repositories
  */
@@ -852,18 +870,121 @@ export async function rewriteHistoryFrom(gitRoot: string, commitHash: string): P
  */
 export async function getGitWorkspaceFolders(): Promise<Array<{folder: vscode.WorkspaceFolder, gitRoot: string}>> {
     const folders = vscode.workspace.workspaceFolders || [];
-    const gitFolders: Array<{folder: vscode.WorkspaceFolder, gitRoot: string}> = [];
-    
+    if (folders.length === 0) {
+        return [];
+    }
+
+    const cacheTtlMs = vscode.workspace.getConfiguration('gitQuickOps').get<number>('repositoryScanCacheMs') ?? 10000;
+    const folderSignature = folders.map(folder => folder.uri.fsPath).sort().join('|');
+
+    if (gitWorkspaceFoldersCache &&
+        gitWorkspaceFoldersCache.signature === folderSignature &&
+        gitWorkspaceFoldersCache.expiresAt > Date.now()) {
+        return gitWorkspaceFoldersCache.result;
+    }
+
+    const gitFolders = new Map<string, { folder: vscode.WorkspaceFolder; gitRoot: string }>();
+    const maxScanDepth = vscode.workspace.getConfiguration('gitQuickOps').get<number>('repositoryScanDepth') ?? 2;
+    const ignoredDirectories = new Set(['.git', '.svn', '.hg', 'node_modules', 'dist', 'build', 'out', '.next', '.turbo']);
+
+    const addGitFolder = (gitRoot: string, folder?: vscode.WorkspaceFolder) => {
+        if (gitFolders.has(gitRoot)) {
+            return;
+        }
+
+        const matchingFolder = folder || vscode.workspace.getWorkspaceFolder(vscode.Uri.file(gitRoot));
+        if (!matchingFolder) {
+            return;
+        }
+
+        gitFolders.set(gitRoot, { folder: matchingFolder, gitRoot });
+    };
+
+    // First, prefer repos already detected by VS Code's Git extension.
+    try {
+        const gitExtension = vscode.extensions.getExtension('vscode.git');
+        if (gitExtension) {
+            const gitExports = (gitExtension.isActive ? gitExtension.exports : await gitExtension.activate()) as GitExtensionExports;
+            const gitApi = gitExports?.getAPI?.(1);
+
+            if (gitApi?.repositories) {
+                for (const repository of gitApi.repositories) {
+                    const gitRoot = repository.rootUri.fsPath;
+                    addGitFolder(gitRoot);
+                }
+            }
+        }
+    } catch {
+        // Ignore Git extension API failures and continue with filesystem-based detection.
+    }
+
+    // Include each workspace folder if it is itself a git repository.
     for (const folder of folders) {
         try {
             const gitRoot = await getGitRoot(folder);
-            gitFolders.push({ folder, gitRoot });
+            addGitFolder(gitRoot, folder);
         } catch {
-            // Not a git repo, skip
+            // Not a git repo, continue.
         }
     }
-    
-    return gitFolders;
+
+    // Also detect git repositories in subdirectories under each workspace folder.
+    for (const folder of folders) {
+        const queue: Array<{ dir: string; depth: number }> = [{ dir: folder.uri.fsPath, depth: 0 }];
+
+        while (queue.length > 0) {
+            const current = queue.shift();
+            if (!current) {
+                continue;
+            }
+
+            let entries: fs.Dirent[] = [];
+            try {
+                entries = await fs.promises.readdir(current.dir, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                if (!entry.isDirectory()) {
+                    continue;
+                }
+
+                if (ignoredDirectories.has(entry.name)) {
+                    continue;
+                }
+
+                const childPath = path.join(current.dir, entry.name);
+                const gitMarker = path.join(childPath, '.git');
+                const hasGitMarker = fs.existsSync(gitMarker);
+
+                if (hasGitMarker) {
+                    try {
+                        const gitRoot = await execGit(childPath, ['rev-parse', '--show-toplevel']);
+                        addGitFolder(gitRoot, folder);
+                    } catch {
+                        // Found a .git marker but it is not a readable repository.
+                    }
+
+                    // Do not scan inside discovered repositories.
+                    continue;
+                }
+
+                if (current.depth < maxScanDepth) {
+                    queue.push({ dir: childPath, depth: current.depth + 1 });
+                }
+            }
+        }
+    }
+
+    const result = Array.from(gitFolders.values());
+    gitWorkspaceFoldersCache = {
+        signature: folderSignature,
+        expiresAt: Date.now() + cacheTtlMs,
+        result
+    };
+
+    return result;
 }
 
 /**
