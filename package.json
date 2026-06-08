@@ -16,6 +16,13 @@
     "SCM Providers",
     "Other"
   ],
+  "keywords": [
+    "git",
+    "scm",
+    "quickops",
+    "cursor",
+    "vscode"
+  ],
   "activationEvents": [
     "onView:gitQuickOpsRepositories",
     "onView:gitQuickOpsMenu",

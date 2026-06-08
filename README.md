@@ -4,6 +4,13 @@
 
 A comprehensive git operations toolkit with an intuitive menu-driven interface, bringing the power of the git-quickops shell script directly into VS Code.
 
+## Editor Compatibility
+
+- VS Code (stable and insiders)
+- Cursor
+
+Git QuickOps uses the same VS Code extension API surface that Cursor supports, and automatically detects the built-in Git extension in both environments.
+
 ## Features
 
 - **Menu-driven interface** - Easy-to-navigate quick pick menus for all git operations
