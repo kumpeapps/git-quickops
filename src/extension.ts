@@ -288,9 +288,9 @@ async function subscribeToGitStateChanges(
     refreshAllViews: () => void,
     invalidateRepoBranchCache: (gitRoot?: string) => void
 ): Promise<void> {
-    const gitExtension = vscode.extensions.getExtension('vscode.git');
+    const gitExtension = git.getBuiltinGitExtension();
     if (!gitExtension) {
-        console.error('[Git QuickOps] Git extension "vscode.git" not found; git state event integration disabled.');
+        console.error('[Git QuickOps] Built-in Git extension not found; git state event integration disabled.');
         return;
     }
 

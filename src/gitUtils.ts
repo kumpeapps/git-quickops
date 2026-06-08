@@ -20,6 +20,19 @@ interface GitExtensionExports {
     getAPI(version: 1): GitAPI;
 }
 
+const GIT_EXTENSION_CANDIDATE_IDS = ['vscode.git', 'cursor.git'];
+
+export function getBuiltinGitExtension(): vscode.Extension<unknown> | undefined {
+    for (const extensionId of GIT_EXTENSION_CANDIDATE_IDS) {
+        const extension = vscode.extensions.getExtension(extensionId);
+        if (extension) {
+            return extension;
+        }
+    }
+
+    return undefined;
+}
+
 let gitWorkspaceFoldersCache: {
     signature: string;
     expiresAt: number;
@@ -902,7 +915,7 @@ export async function getGitWorkspaceFolders(): Promise<Array<{folder: vscode.Wo
 
     // First, prefer repos already detected by VS Code's Git extension.
     try {
-        const gitExtension = vscode.extensions.getExtension('vscode.git');
+        const gitExtension = getBuiltinGitExtension();
         if (gitExtension) {
             const gitExports = (gitExtension.isActive ? gitExtension.exports : await gitExtension.activate()) as GitExtensionExports;
             const gitApi = gitExports?.getAPI?.(1);
